@@ -23,8 +23,8 @@ ENV_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
 ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 
 # SharePoint constants
-SP_USER    = "meenakshi_singh@wadhwanifoundation.org"
-SP_FOLDER  = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
+SP_USER    = "meenakshi.singh@wadhwanifoundation.org"
+SP_FOLDER  = "04. Advisors/2026/Portfolio Success Dashboard"
 DASHBOARD_FILE = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 
 st.set_page_config(page_title="Portfolio Success Intelligence", page_icon="🚀", layout="wide")
@@ -273,25 +273,29 @@ with st.spinner("Loading portfolio data..."):
             from sharepoint_reader import SharePointReader
             sp_test = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
             
-            # Debug: list root folder to find exact path
+            # Debug: browse all possible paths
             with st.expander("🔍 Debug: Browse SharePoint folders", expanded=False):
-                try:
-                    # Try listing root
-                    root_items = sp_test.list_folder("Documents")
-                    st.write("**Contents of Documents/:**")
-                    for item in root_items:
-                        icon = "📁" if "folder" in item else "📄"
-                        st.write(f"{icon} {item['name']}")
-                except Exception as e:
-                    st.write(f"Error listing Documents/: {e}")
+                paths_to_try = [
+                    "",
+                    "Documents",
+                    "Documents/04. Advisors",
+                    "Documents/04. Advisors/2026",
+                    "Documents/04. Advisors/2026/Portfolio Success Dashboard",
+                    "04. Advisors",
+                    "04. Advisors/2026",
+                ]
+                for try_path in paths_to_try:
                     try:
-                        root_items = sp_test.list_folder("")
-                        st.write("**Root contents:**")
-                        for item in root_items:
+                        items = sp_test.list_folder(try_path)
+                        label = try_path if try_path else "ROOT"
+                        st.write(f"**Contents of {label}/:**")
+                        for item in items:
                             icon = "📁" if "folder" in item else "📄"
                             st.write(f"{icon} {item['name']}")
-                    except Exception as e2:
-                        st.write(f"Error listing root: {e2}")
+                        st.divider()
+                    except Exception as e:
+                        st.write(f"❌ `{try_path}`: {e}")
+                        st.divider()
 
             company_df, basics_df, err = load_data_sharepoint(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
         except Exception as auth_err:
