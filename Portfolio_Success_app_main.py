@@ -269,7 +269,15 @@ def load_data_local(root_path):
 # Load data
 with st.spinner("Loading portfolio data..."):
     if use_sharepoint and ENV_CLIENT_ID:
-        company_df, basics_df, err = load_data_sharepoint(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+        try:
+            from sharepoint_reader import SharePointReader
+            sp_test = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+            st.success("✅ SharePoint authentication successful!")
+            company_df, basics_df, err = load_data_sharepoint(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+        except Exception as auth_err:
+            st.error(f"❌ SharePoint Auth Error: {str(auth_err)}")
+            st.info("Check your AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET in Streamlit secrets.")
+            st.stop()
     else:
         company_df, basics_df, err = load_data_local(root_path or "")
 
