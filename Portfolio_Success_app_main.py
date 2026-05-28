@@ -29,6 +29,54 @@ DASHBOARD_FILE = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 
 st.set_page_config(page_title="Portfolio Success Intelligence", page_icon="🚀", layout="wide")
 
+# ── password protection ───────────────────────────────
+ENV_PASSWORD = os.environ.get("APP_PASSWORD", "nen2026")
+
+def check_password():
+    """Simple password gate."""
+    if st.session_state.get("authenticated"):
+        return True
+
+    # Center the login form
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style='text-align:center;padding:40px 30px;background:#ffffff;
+        border-radius:16px;border:1px solid #e2e8f0;box-shadow:0 4px 24px rgba(0,0,0,0.06)'>
+            <div style='font-size:2.5rem;margin-bottom:8px'>🚀</div>
+            <div style='font-size:1.3rem;font-weight:700;color:#1e293b;margin-bottom:4px'>
+                Portfolio Success Intelligence</div>
+            <div style='font-size:0.85rem;color:#64748b;margin-bottom:24px'>
+                NEN Accelerate · Resources Network</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        password = st.text_input("Enter access password", 
+                                  type="password",
+                                  placeholder="Enter password...",
+                                  label_visibility="collapsed")
+        
+        col_a, col_b, col_c = st.columns([1,2,1])
+        with col_b:
+            login_btn = st.button("🔐  Login", use_container_width=True)
+
+        if login_btn:
+            if password == ENV_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password. Please try again.")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.caption("For access contact: meenakshi.singh@wadhwanifoundation.org")
+    
+    return False
+
+if not check_password():
+    st.stop()
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -181,7 +229,7 @@ def load_data_sharepoint(client_id, tenant_id, client_secret):
     sp = SharePointReader(client_id, tenant_id, client_secret)
     file_path = f"{SP_FOLDER}/{DASHBOARD_FILE}"
     try:
-        content = sp.download_file(SP_USER, file_path)
+        content = sp.download_file(file_path)
         tmp = os.path.join(tempfile.gettempdir(), "nen_dashboard.xlsx")
         with open(tmp, "wb") as f:
             f.write(content)
@@ -316,7 +364,7 @@ def load_v_files_sharepoint(vname, sp):
     folder = f"{SP_FOLDER}/{vname}"
     files  = {}
     try:
-        items = sp.list_files(SP_USER, folder)
+        items = sp.list_files(folder)
         for fname in items:
             fl = fname.lower()
             fpath = f"{folder}/{fname}"
@@ -330,7 +378,7 @@ def get_file_text(fpath, sp=None):
     """Get text from file — local or SharePoint."""
     if sp and not os.path.exists(str(fpath)):
         try:
-            content = sp.download_file(SP_USER, fpath)
+            content = sp.download_file(fpath)
             return extract_text_bytes(content, Path(fpath).name)
         except: return ""
     return extract_text_local(fpath)
@@ -450,7 +498,7 @@ elif view == "Venture Cards":
         else:
             vfiles = load_v_files_local(vname)
 
-        fb_text = get_file_text(vfiles["feedback"],  sp_reader) if "feedback"   in vfiles else ""
+        fb_text = get_file_text(vfiles["feedback"], sp_reader) if "feedback"   in vfiles else ""
         tr_text = get_file_text(vfiles["transcript"], sp_reader) if "transcript" in vfiles else ""
         signals = detect_signals((notes or "")+" "+(fb_text or ""))
 
@@ -524,7 +572,7 @@ elif view == "Success Signals":
         else:
             vfiles = load_v_files_local(vname)
 
-        fb   = get_file_text(vfiles["feedback"],  sp_reader) if "feedback"   in vfiles else ""
+        fb   = get_file_text(vfiles["feedback"], sp_reader) if "feedback"   in vfiles else ""
         tr   = get_file_text(vfiles["transcript"], sp_reader) if "transcript" in vfiles else ""
         combined = (notes or "") + " " + (fb or "") + " " + (tr or "")
 
