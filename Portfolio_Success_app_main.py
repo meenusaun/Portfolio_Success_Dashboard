@@ -272,11 +272,30 @@ with st.spinner("Loading portfolio data..."):
         try:
             from sharepoint_reader import SharePointReader
             sp_test = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-            st.success("✅ SharePoint authentication successful!")
+            
+            # Debug: list root folder to find exact path
+            with st.expander("🔍 Debug: Browse SharePoint folders", expanded=False):
+                try:
+                    # Try listing root
+                    root_items = sp_test.list_folder("Documents")
+                    st.write("**Contents of Documents/:**")
+                    for item in root_items:
+                        icon = "📁" if "folder" in item else "📄"
+                        st.write(f"{icon} {item['name']}")
+                except Exception as e:
+                    st.write(f"Error listing Documents/: {e}")
+                    try:
+                        root_items = sp_test.list_folder("")
+                        st.write("**Root contents:**")
+                        for item in root_items:
+                            icon = "📁" if "folder" in item else "📄"
+                            st.write(f"{icon} {item['name']}")
+                    except Exception as e2:
+                        st.write(f"Error listing root: {e2}")
+
             company_df, basics_df, err = load_data_sharepoint(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
         except Exception as auth_err:
-            st.error(f"❌ SharePoint Auth Error: {str(auth_err)}")
-            st.info("Check your AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET in Streamlit secrets.")
+            st.error(f"❌ {str(auth_err)}")
             st.stop()
     else:
         company_df, basics_df, err = load_data_local(root_path or "")
