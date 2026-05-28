@@ -522,7 +522,8 @@ elif view == "Venture Cards":
                 if tgt != "—": st.metric("3-Yr Target (Cr)", tgt)
 
             st.markdown(f"**Sprint Completion: {pct_num:.0f}%** &nbsp; `{bucket}`")
-            st.progress(min(pct_num/100, 1.0))
+            safe_pct = max(0.0, min(float(pct_num)/100, 1.0)) if pct_num else 0.0
+            st.progress(safe_pct)
 
             if vfiles:
                 found = []
@@ -549,7 +550,7 @@ elif view == "Venture Cards":
                 with st.spinner("Generating AI insight..."):
                     try:
                         resp = client.messages.create(
-                            model="claude-sonnet-4-20250514", max_tokens=400,
+                            model="claude-sonnet-4-5", max_tokens=400,
                             messages=[{"role":"user","content":
                                 f"Venture: {vname}\nNotes: {notes}\nFeedback: {fb_text[:500]}\n\n"
                                 "Write 3-4 sentences: current momentum, risks to watch, recommended next action."}])
@@ -588,7 +589,7 @@ elif view == "Success Signals":
         if use_ai_signals and client:
             try:
                 resp = client.messages.create(
-                    model="claude-sonnet-4-20250514", max_tokens=600,
+                    model="claude-sonnet-4-5", max_tokens=600,
                     messages=[{"role":"user","content":
                         f"""Analyze this text from venture '{vname}' and identify success signals.
 Success signals = concrete evidence venture spent money or effort for growth:
