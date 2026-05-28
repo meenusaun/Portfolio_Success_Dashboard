@@ -24,7 +24,7 @@ ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 
 # SharePoint constants
 SP_USER    = "meenakshi.singh@wadhwanifoundation.org"
-SP_FOLDER  = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER  = "04. Advisors/2026/Portfolio Success Dashboard"
 DASHBOARD_FILE = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 
 st.set_page_config(page_title="Portfolio Success Intelligence", page_icon="🚀", layout="wide")
@@ -273,52 +273,7 @@ with st.spinner("Loading portfolio data..."):
             from sharepoint_reader import SharePointReader
             sp_test = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
             
-            # Debug: browse all possible paths
-            with st.expander("🔍 Debug: Browse SharePoint folders", expanded=False):
-                # Step through folder tree
-                try:
-                    # Level 1: Documents
-                    items = sp_test.list_folder("Documents")
-                    st.write("**Documents/:**")
-                    for i in items:
-                        icon = "📁" if "folder" in i else "📄"
-                        st.write(f"{icon} `{i['name']}`")
-                    st.divider()
 
-                    # Level 2: find 04. Advisors (or similar)
-                    advisors = [i["name"] for i in items if "advisor" in i["name"].lower() or "04" in i["name"]]
-                    if advisors:
-                        adv_path = f"Documents/{advisors[0]}"
-                        items2 = sp_test.list_folder(adv_path)
-                        st.write(f"**{adv_path}/:**")
-                        for i in items2:
-                            icon = "📁" if "folder" in i else "📄"
-                            st.write(f"{icon} `{i['name']}`")
-                        st.divider()
-
-                        # Level 3: find 2026
-                        yr = [i["name"] for i in items2 if "2026" in i["name"]]
-                        if yr:
-                            yr_path = f"{adv_path}/{yr[0]}"
-                            items3 = sp_test.list_folder(yr_path)
-                            st.write(f"**{yr_path}/:**")
-                            for i in items3:
-                                icon = "📁" if "folder" in i else "📄"
-                                st.write(f"{icon} `{i['name']}`")
-                            st.divider()
-
-                            # Level 4: find Portfolio folder
-                            pf = [i["name"] for i in items3 if "portfolio" in i["name"].lower()]
-                            if pf:
-                                pf_path = f"{yr_path}/{pf[0]}"
-                                items4 = sp_test.list_folder(pf_path)
-                                st.write(f"**{pf_path}/:**")
-                                for i in items4:
-                                    icon = "📁" if "folder" in i else "📄"
-                                    st.write(f"{icon} `{i['name']}`")
-                                st.success(f"✅ Full path: {pf_path}")
-                except Exception as e:
-                    st.error(f"Browse error: {e}")
 
             company_df, basics_df, err = load_data_sharepoint(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
         except Exception as auth_err:

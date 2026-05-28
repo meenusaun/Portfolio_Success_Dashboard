@@ -1,13 +1,15 @@
 """
-Personal OneDrive reader using Microsoft Graph API
-Correctly accesses user's personal OneDrive drive
+OneDrive reader using Microsoft Graph API
+Uses SharePoint personal site path directly
 """
 import os, tempfile, requests
 from pathlib import Path
 
 class SharePointReader:
     GRAPH_URL  = "https://graph.microsoft.com/v1.0"
-    USER_UPN   = "meenakshi.singh@wadhwanifoundation.org"
+    # Personal OneDrive site
+    SP_HOSTNAME = "wadhwanifoundation-my.sharepoint.com"
+    SP_SITEPATH = "/personal/meenakshi_singh_wadhwanifoundation_org"
 
     def __init__(self, client_id, tenant_id, client_secret):
         self.client_id     = client_id
@@ -16,7 +18,7 @@ class SharePointReader:
         self.token         = None
         self.drive_id      = None
         self._authenticate()
-        self._get_personal_drive()
+        self._get_drive()
 
     def _authenticate(self):
         url  = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
@@ -34,21 +36,27 @@ class SharePointReader:
     def _headers(self):
         return {"Authorization": f"Bearer {self.token}"}
 
-    def _get_personal_drive(self):
-        """Get personal OneDrive drive for user — uses /users/{upn}/drive endpoint."""
-        url  = f"{self.GRAPH_URL}/users/{self.USER_UPN}/drive"
+    def _get_drive(self):
+        """Get drive via SharePoint personal site."""
+        # Get site ID using hostname:sitepath format
+        url  = f"{self.GRAPH_URL}/sites/{self.SP_HOSTNAME}:{self.SP_SITEPATH}"
         resp = requests.get(url, headers=self._headers(), timeout=30)
         if not resp.ok:
-            raise Exception(f"Could not get personal drive ({resp.status_code}): {resp.json()}")
-        drive = resp.json()
-        self.drive_id = drive["id"]
+            raise Exception(f"Site lookup failed ({resp.status_code}): {resp.json()}")
+        site_id = resp.json()["id"]
+
+        # Get the default document library drive
+        url2 = f"{self.GRAPH_URL}/sites/{site_id}/drive"
+        resp2 = requests.get(url2, headers=self._headers(), timeout=30)
+        if not resp2.ok:
+            raise Exception(f"Drive lookup failed ({resp2.status_code}): {resp2.json()}")
+        self.drive_id = resp2.json()["id"]
 
     def list_folder(self, folder_path):
         """List files and subfolders."""
         if not folder_path or folder_path.strip() in ["", "/"]:
             url = f"{self.GRAPH_URL}/drives/{self.drive_id}/root/children"
         else:
-            # Use path-based addressing
             path = folder_path.strip("/")
             url  = f"{self.GRAPH_URL}/drives/{self.drive_id}/root:/{path}:/children"
         resp = requests.get(url, headers=self._headers(), timeout=30)
