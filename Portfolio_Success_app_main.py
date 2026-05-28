@@ -24,7 +24,7 @@ ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 
 # SharePoint constants
 SP_USER    = "meenakshi.singh@wadhwanifoundation.org"
-SP_FOLDER  = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER  = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 DASHBOARD_FILE = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 
 st.set_page_config(page_title="Portfolio Success Intelligence", page_icon="🚀", layout="wide")
@@ -276,13 +276,8 @@ with st.spinner("Loading portfolio data..."):
             # Debug: browse all possible paths
             with st.expander("🔍 Debug: Browse SharePoint folders", expanded=False):
                 paths_to_try = [
-                    "",
                     "Documents",
-                    "Documents/04. Advisors",
-                    "Documents/04. Advisors/2026",
                     "Documents/04. Advisors/2026/Portfolio Success Dashboard",
-                    "04. Advisors",
-                    "04. Advisors/2026",
                 ]
                 for try_path in paths_to_try:
                     try:
