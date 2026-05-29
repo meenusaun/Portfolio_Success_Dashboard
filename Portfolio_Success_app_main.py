@@ -443,10 +443,10 @@ with tab_overview:
     fc1, fc2, fc3, fc4 = st.columns(4)
     hub_list = ["All"] + sorted(set(cv(get_row(v),col_hub) for v in ventures_raw if cv(get_row(v),col_hub) != "—"))
     vp_list  = ["All"] + sorted(set(cv(get_row(v),col_vp)  for v in ventures_raw if col_vp and cv(get_row(v),col_vp)  != "—"))
-    hub_f    = fc1.selectbox("Hub",             hub_list)
-    vp_f     = fc2.selectbox("Venture Partner", vp_list)
-    rag_f    = fc3.selectbox("RAG Filter",      ["All","🟢 Green","🟡 Amber","🔴 Red","⚪ ZERO"])
-    stage_f  = fc4.selectbox("Sprint Stage",    ["All","0–25%","26–50%","51–75%","76–99%","100%"])
+    hub_f    = fc1.selectbox("Hub", hub_list, key="ov_hub")
+    vp_f     = fc2.selectbox("Venture Partner", vp_list, key="ov_vp")
+    rag_f    = fc3.selectbox("RAG Filter", ["All","🟢 Green","🟡 Amber","🔴 Red","⚪ ZERO"], key="ov_rag")
+    stage_f  = fc4.selectbox("Sprint Stage", ["All","0–25%","26–50%","51–75%","76–99%","100%"], key="ov_stage")
 
     # ── compute scores (AI by default) ───────────────
     venture_data = []
@@ -609,51 +609,48 @@ with tab_overview:
         col.markdown(f"**{stage}** — {cnt} ventures ({pct}%)")
         col.progress(pct/100)
 
-    # ── venture table ─────────────────────────────────
+    # ── hub-wise RAG table ────────────────────────────
     st.divider()
-    st.subheader(f"Venture List ({len(filtered)} ventures)")
+    st.subheader("Hub-wise Venture Count")
+
+    # Build hub data
+    hub_rag = {}
+    for v in filtered:
+        h = v["hub"] if v["hub"] != "—" else "Other"
+        if h not in hub_rag:
+            hub_rag[h] = {"Green":0,"Amber":0,"Red":0,"ZERO":0,"Total":0}
+        hub_rag[h][v["overall_rag"]] = hub_rag[h].get(v["overall_rag"],0) + 1
+        hub_rag[h]["Total"] += 1
 
     # Table header
-    h0,h1,h2,h3,h4,h5,h6,h7 = st.columns([3,1.2,1.2,1.2,1.2,1,1,1])
-    h0.markdown("**Venture**")
-    h1.markdown("**Overall RAG**")
-    h2.markdown("**Momentum**")
-    h3.markdown("**Investment**")
-    h4.markdown("**Hub**")
-    h5.markdown("**Sprint Stage**")
-    h6.markdown("**Revenue (Cr)**")
-    h7.markdown("**Action**")
+    h0,h1,h2,h3,h4,h5 = st.columns([2,1,1,1,1,1])
+    h0.markdown("**Hub**")
+    h1.markdown("**Total**")
+    h2.markdown("**🟢 Green**")
+    h3.markdown("**🟡 Amber**")
+    h4.markdown("**🔴 Red**")
+    h5.markdown("**⚪ No Data**")
     st.divider()
 
-    # Sort by RAG severity
-    filtered_sorted = sorted(filtered, key=lambda x: RAG_ORDER.get(x["overall_rag"],4))
-
-    for v in filtered_sorted:
-        m_badge = rag_badge(v["momentum_rag"])
-        i_badge = rag_badge(v["investment_rag"])
-        o_badge = rag_badge(v["overall_rag"])
-
-        c0,c1,c2,c3,c4,c5,c6,c7 = st.columns([3,1.2,1.2,1.2,1.2,1,1,1])
-        c0.markdown(f"**{v['name']}**")
-        c1.markdown(o_badge, unsafe_allow_html=True)
-        c2.markdown(m_badge, unsafe_allow_html=True)
-        c3.markdown(i_badge, unsafe_allow_html=True)
-        c4.markdown(f"<small>{v['hub']}</small>", unsafe_allow_html=True)
-        c5.markdown(f"<small>{v['bucket']}</small>", unsafe_allow_html=True)
-        c6.markdown(f"<small>{v['rev']}</small>", unsafe_allow_html=True)
-        if c7.button("→", key=f"open_{v['name']}", help="Open Venture Card"):
-            st.session_state["selected_venture"] = v["name"]
-            st.session_state["jump_to_venture"]  = True
-            st.rerun()
-
-        # Expandable reasons row
-        with st.expander("", expanded=False):
-            if v["momentum_reason"] and v["momentum_reason"] != "—":
-                st.caption(f"📈 **Momentum:** {v['momentum_reason']}")
-            if v["investment_reason"] and v["investment_reason"] != "—":
-                st.caption(f"💰 **Investment:** {v['investment_reason']}")
-            if v["notes"]:
-                st.info(v["notes"][:400])
+    for hub, counts in sorted(hub_rag.items(), key=lambda x: -x[1]["Total"]):
+        c0,c1,c2,c3,c4,c5 = st.columns([2,1,1,1,1,1])
+        total_h = counts["Total"]
+        c0.markdown(f"**{hub}**")
+        c1.markdown(f"**{total_h}**")
+        c2.markdown(f"<span style='color:#16a34a;font-weight:700'>{counts.get('Green',0)}</span>", unsafe_allow_html=True)
+        c3.markdown(f"<span style='color:#d97706;font-weight:700'>{counts.get('Amber',0)}</span>", unsafe_allow_html=True)
+        c4.markdown(f"<span style='color:#dc2626;font-weight:700'>{counts.get('Red',0)}</span>", unsafe_allow_html=True)
+        c5.markdown(f"<span style='color:#94a3b8;font-weight:700'>{counts.get('ZERO',0)}</span>", unsafe_allow_html=True)
+    
+    st.divider()
+    # Totals row
+    t0,t1,t2,t3,t4,t5 = st.columns([2,1,1,1,1,1])
+    t0.markdown("**Total**")
+    t1.markdown(f"**{len(filtered)}**")
+    t2.markdown(f"**{sum(c.get('Green',0) for c in hub_rag.values())}**")
+    t3.markdown(f"**{sum(c.get('Amber',0) for c in hub_rag.values())}**")
+    t4.markdown(f"**{sum(c.get('Red',0) for c in hub_rag.values())}**")
+    t5.markdown(f"**{sum(c.get('ZERO',0) for c in hub_rag.values())}**")
 
 # ══════════════════════════════════════════════════════
 #  VIEW 2: VENTURE CARDS
@@ -665,12 +662,12 @@ with tab_ventures:
 
     # ── filters ──────────────────────────────────────
     fc1, fc2, fc3, fc4 = st.columns(4)
-    search   = fc1.text_input("🔍 Search")
+    search   = fc1.text_input("🔍 Search", key="vc_search")
     hub_list = ["All"] + sorted(set(cv(get_row(v),col_hub) for v in ventures_raw if cv(get_row(v),col_hub) != "—"))
     vp_list  = ["All"] + sorted(set(cv(get_row(v),col_vp)  for v in ventures_raw if col_vp and cv(get_row(v),col_vp)  != "—"))
-    hub_f    = fc2.selectbox("Hub",             hub_list)
-    vp_f     = fc3.selectbox("Venture Partner", vp_list)
-    rag_f    = fc4.selectbox("RAG",             ["All","🟢 Green","🟡 Amber","🔴 Red"])
+    hub_f    = fc2.selectbox("Hub", hub_list, key="vc_hub")
+    vp_f     = fc3.selectbox("Venture Partner", vp_list, key="vc_vp")
+    rag_f    = fc4.selectbox("RAG", ["All","🟢 Green","🟡 Amber","🔴 Red"], key="vc_rag")
 
     filtered = ventures_raw
     if search: filtered = [v for v in filtered if search.lower() in v.lower()]
