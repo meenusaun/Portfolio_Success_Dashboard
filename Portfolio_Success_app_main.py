@@ -788,14 +788,31 @@ Notes: {notes[:600]}
 Feedback: {fb_text[:400]}
 Transcript: {tr_text[:400]}
 
-Provide a structured analysis:
-1. Current Momentum (2-3 sentences)
-2. Key Risks to Watch (2-3 sentences)  
-3. Success Signals Observed (bullet points)
-4. Recommended Next Action (1-2 sentences)
+Provide a concise analysis in plain text (no markdown headers, no # symbols).
+Use these section labels followed by a colon:
 
-Sprint Momentum RAG: score and reason
-Self Investment Signal RAG: score and reason"""}])
-                                st.markdown(resp.content[0].text)
+MOMENTUM: 2-3 sentences on current activity and progress.
+RISKS: 2-3 sentences on key concerns to watch.
+SIGNALS: List 2-3 success signals observed (one per line, start each with •).
+NEXT ACTION: 1-2 sentences on recommended follow-up.
+MOMENTUM RAG: Green/Amber/Red — one sentence reason.
+INVESTMENT RAG: Green/Amber/Red — one sentence reason."""}])
+                                
+                                insight_text = resp.content[0].text.strip()
+                                # Display in styled container
+                                sections = insight_text.splitlines()
+                                for line in sections:
+                                    line = line.strip()
+                                    if not line: continue
+                                    if line.startswith("MOMENTUM RAG:") or line.startswith("INVESTMENT RAG:"):
+                                        st.caption(f"🎯 {line}")
+                                    elif any(line.startswith(x) for x in ["MOMENTUM:","RISKS:","SIGNALS:","NEXT ACTION:"]):
+                                        label, _, rest = line.partition(":")
+                                        st.markdown(f"**{label.title()}**")
+                                        if rest.strip(): st.write(rest.strip())
+                                    elif line.startswith("•"):
+                                        st.write(line)
+                                    else:
+                                        st.write(line)
                             except Exception as e:
                                 st.error(f"AI error: {e}")
