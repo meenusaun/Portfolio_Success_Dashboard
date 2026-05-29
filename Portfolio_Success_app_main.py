@@ -488,55 +488,65 @@ if view == "Portfolio Overview":
             common_text = load_common_docs()
         col_info.caption(f"📂 Common Documents loaded: {len(common_text)} chars")
 
-        # Step 3: AI scoring in parallel (skip ventures with no data)
+        # Step 3: AI scoring in parallel — ALL ventures scored
+        # Common Documents is primary source, Notes + files are supplementary
         if client:
             import concurrent.futures
 
-            ventures_with_data = [v for v in venture_data
-                                   if v["notes"] and v["notes"] not in ["—","Pending",""]]
-            ventures_no_data   = [v for v in venture_data if v not in ventures_with_data]
+            prog = st.progress(0, text=f"🤖 AI scoring all {len(venture_data)} ventures using Common Documents + Notes + Files...")
+            completed = [0]
 
-            # Mark no-data ventures ZERO immediately
-            for v in ventures_no_data:
-                v["momentum_reason"]   = "No data available"
-                v["investment_reason"] = "No data available"
+            def score_one(v):
+                # Load venture-specific files
+                vfiles  = load_v_files(v["name"])
+                fb_text = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+                tr_text = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
 
-            if ventures_with_data:
-                prog = st.progress(0, text=f"🤖 AI scoring {len(ventures_with_data)} ventures...")
-                completed = [0]
+                # Extract venture-specific section from common documents
+                venture_common = extract_venture_from_common(v["name"], common_text)
 
-                def score_one(v):
-                    vfiles  = load_v_files(v["name"])
-                    fb_text = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-                    tr_text = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-                    m, i, mr, ir = compute_rag_ai(
-                        v["name"], v["notes"], fb_text, tr_text,
-                        common_text, v["pct_raw"], api_key)
-                    return v["name"], m, i, mr, ir
+                # Only skip if absolutely no data from ANY source
+                has_data = any([
+                    v["notes"] and v["notes"] not in ["—","Pending",""],
+                    fb_text,
+                    tr_text,
+                    venture_common
+                ])
 
-                results = {}
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-                    futures = {ex.submit(score_one, v): v for v in ventures_with_data}
-                    for fut in concurrent.futures.as_completed(futures):
-                        try:
-                            vn, m, i, mr, ir = fut.result()
-                            results[vn] = (m, i, mr, ir)
-                        except: pass
-                        completed[0] += 1
-                        prog.progress(
-                            completed[0] / len(ventures_with_data),
-                            text=f"🤖 Scored {completed[0]}/{len(ventures_with_data)} ventures..."
-                        )
-                prog.empty()
+                if not has_data:
+                    return v["name"], "ZERO", "ZERO", "No data found in any source", "No data found in any source"
 
-                for v in venture_data:
-                    if v["name"] in results:
-                        m, i, mr, ir = results[v["name"]]
-                        v["momentum_rag"]      = m
-                        v["investment_rag"]    = i
-                        v["overall_rag"]       = combine_rag(m, i)
-                        v["momentum_reason"]   = mr
-                        v["investment_reason"] = ir
+                m, i, mr, ir = compute_rag_ai(
+                    v["name"], v["notes"], fb_text, tr_text,
+                    common_text, v["pct_raw"], api_key)
+                return v["name"], m, i, mr, ir
+
+            results = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                futures = {ex.submit(score_one, v): v for v in venture_data}
+                for fut in concurrent.futures.as_completed(futures):
+                    try:
+                        vn, m, i, mr, ir = fut.result()
+                        results[vn] = (m, i, mr, ir)
+                    except Exception as e:
+                        pass
+                    completed[0] += 1
+                    prog.progress(
+                        completed[0] / len(venture_data),
+                        text=f"🤖 Scored {completed[0]}/{len(venture_data)} ventures..."
+                    )
+            prog.empty()
+
+            for v in venture_data:
+                if v["name"] in results:
+                    m, i, mr, ir = results[v["name"]]
+                    v["momentum_rag"]      = m
+                    v["investment_rag"]    = i
+                    v["overall_rag"]       = combine_rag(m, i)
+                    v["momentum_reason"]   = mr
+                    v["investment_reason"] = ir
+        else:
+            st.warning("⚠️ No API key — add ANTHROPIC_API_KEY to Streamlit secrets for AI scoring.")
 
         st.session_state[cache_key] = venture_data
         st.success(f"✅ AI scores computed for {len([v for v in venture_data if v['overall_rag'] != 'ZERO'])} ventures")
