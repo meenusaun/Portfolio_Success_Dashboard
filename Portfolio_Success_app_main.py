@@ -421,28 +421,29 @@ if view == "Portfolio Overview":
         with st.spinner("Loading common documents..."):
             common_text = load_common_docs()
 
-    prog = st.progress(0, text="Computing venture scores...")
-    for idx, vname in enumerate(ventures_raw):
-        row    = get_row(vname)
-        hub    = cv(row, col_hub)
-        vp     = cv(row, col_vp) if col_vp else "—"
-        sprint = cv(row, col_sprint)
-        rev    = cv(row, col_rev)
-        notes  = cv(row, col_notes, default="")
-        pct_raw= row[col_pct] if (row is not None and col_pct) else None
-        bucket = get_stage_bucket(pct_raw)
+    # ── use cached scores if available ──────────────
+    cache_key = f"rag_scores_{'ai' if use_ai_rag else 'kw'}"
+    
+    if st.button("🔄 Refresh Scores", help="Recompute all RAG scores"):
+        st.session_state.pop(cache_key, None)
+        st.session_state.pop("common_text_cache", None)
 
-        if use_ai_rag and client:
-            vfiles  = load_v_files(vname)
-            fb_text = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-            tr_text = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-            m_rag, i_rag, m_reason, i_reason = compute_rag_ai(
-                vname, notes, fb_text, tr_text, common_text,
-                pct_raw, api_key)
-        else:
-            # Keyword-based fallback
-            all_text = notes
-            signals  = detect_signals(all_text)
+    if cache_key in st.session_state:
+        venture_data = st.session_state[cache_key]
+        st.caption(f"✅ Using cached scores — click 'Refresh Scores' to recompute")
+    else:
+        # ── keyword scores (instant, no API) ─────────
+        for idx, vname in enumerate(ventures_raw):
+            row    = get_row(vname)
+            hub    = cv(row, col_hub)
+            vp     = cv(row, col_vp) if col_vp else "—"
+            sprint = cv(row, col_sprint)
+            rev    = cv(row, col_rev)
+            notes  = cv(row, col_notes, default="")
+            pct_raw= row[col_pct] if (row is not None and col_pct) else None
+            bucket = get_stage_bucket(pct_raw)
+
+            signals  = detect_signals(notes or "")
             sig_types= [s["type"] for s in signals]
             i_rag    = "Green" if any(t in sig_types for t in ["Hired","Investment / Spend","Self-Funded Sprint"]) else "ZERO"
             try:
@@ -450,20 +451,71 @@ if view == "Portfolio Overview":
                 if p <= 1: p *= 100
                 m_rag = "Green" if p >= 60 else ("Amber" if p >= 30 else ("Red" if p > 0 else "ZERO"))
             except: m_rag = "ZERO"
-            m_reason = f"Sprint completion: {bucket}"
-            i_reason = ", ".join(sig_types) if sig_types else "No investment signals found"
 
-        overall = combine_rag(m_rag, i_rag)
-        venture_data.append({
-            "name": vname, "hub": hub, "vp": vp, "sprint": sprint,
-            "rev": rev, "bucket": bucket, "pct_raw": pct_raw,
-            "momentum_rag": m_rag, "investment_rag": i_rag,
-            "overall_rag": overall,
-            "momentum_reason": m_reason, "investment_reason": i_reason,
-            "notes": notes
-        })
-        prog.progress((idx+1)/max(len(ventures_raw),1))
-    prog.empty()
+            venture_data.append({
+                "name": vname, "hub": hub, "vp": vp, "sprint": sprint,
+                "rev": rev, "bucket": bucket, "pct_raw": pct_raw,
+                "momentum_rag": m_rag, "investment_rag": i_rag,
+                "overall_rag": combine_rag(m_rag, i_rag),
+                "momentum_reason": f"Sprint: {bucket}",
+                "investment_reason": ", ".join(sig_types) if sig_types else "No signals",
+                "notes": notes
+            })
+
+        # ── AI enrichment (only if toggled, parallel) ─
+        if use_ai_rag and client:
+            import concurrent.futures
+
+            ventures_with_data = [v for v in venture_data if v["notes"] and v["notes"] != "—"]
+            ventures_no_data   = [v for v in venture_data if v not in ventures_with_data]
+
+            # Mark no-data ventures as ZERO immediately
+            for v in ventures_no_data:
+                v["momentum_rag"] = "ZERO"
+                v["investment_rag"] = "ZERO"
+                v["overall_rag"] = "ZERO"
+                v["momentum_reason"] = "No data available"
+                v["investment_reason"] = "No data available"
+
+            if ventures_with_data:
+                prog = st.progress(0, text=f"AI scoring {len(ventures_with_data)} ventures with data...")
+                completed = [0]
+
+                def score_one(v):
+                    vfiles  = load_v_files(v["name"])
+                    fb_text = get_text(vfiles.get("feedback",""))   if "feedback"   in vfiles else ""
+                    tr_text = get_text(vfiles.get("transcript","")) if "transcript" in vfiles else ""
+                    m, i, mr, ir = compute_rag_ai(
+                        v["name"], v["notes"], fb_text, tr_text,
+                        common_text, v["pct_raw"], api_key)
+                    return v["name"], m, i, mr, ir
+
+                results = {}
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                    futures = {ex.submit(score_one, v): v for v in ventures_with_data}
+                    for fut in concurrent.futures.as_completed(futures):
+                        try:
+                            vname_r, m, i, mr, ir = fut.result()
+                            results[vname_r] = (m, i, mr, ir)
+                        except: pass
+                        completed[0] += 1
+                        prog.progress(completed[0]/len(ventures_with_data),
+                                      text=f"Scored {completed[0]}/{len(ventures_with_data)} ventures...")
+
+                prog.empty()
+
+                # Update venture_data with AI results
+                for v in venture_data:
+                    if v["name"] in results:
+                        m, i, mr, ir = results[v["name"]]
+                        v["momentum_rag"]    = m
+                        v["investment_rag"]  = i
+                        v["overall_rag"]     = combine_rag(m, i)
+                        v["momentum_reason"] = mr
+                        v["investment_reason"] = ir
+
+        st.session_state[cache_key] = venture_data
+        st.caption(f"✅ Scores computed for {len(venture_data)} ventures")
 
     # ── apply filters ─────────────────────────────────
     filtered = venture_data
@@ -481,40 +533,47 @@ if view == "Portfolio Overview":
     reds    = sum(1 for v in filtered if v["overall_rag"] == "Red")
     zeros   = sum(1 for v in filtered if v["overall_rag"] == "ZERO")
 
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("Total Ventures", total)
-    c2.metric("🟢 Green", greens, f"{round(greens/total*100) if total else 0}%")
-    c3.metric("🟡 Amber", ambers, f"{round(ambers/total*100) if total else 0}%")
-    c4.metric("🔴 Red",   reds,   f"{round(reds/total*100)   if total else 0}%")
+    # Overall portfolio RAG — worst of the lot
+    if reds   > 0: portfolio_rag = "Red"
+    elif ambers > 0: portfolio_rag = "Amber"
+    elif greens > 0: portfolio_rag = "Green"
+    else:            portfolio_rag = "ZERO"
+
+    # Top row — overall RAG + counts
+    st.markdown(f"### Overall Portfolio RAG: {rag_badge(portfolio_rag)}", unsafe_allow_html=True)
+    st.caption("Updates automatically based on filters applied above")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Ventures",  total)
+    c2.metric("🟢 Green",  greens, f"{round(greens/total*100) if total else 0}%")
+    c3.metric("🟡 Amber",  ambers, f"{round(ambers/total*100) if total else 0}%")
+    c4.metric("🔴 Red",    reds,   f"{round(reds/total*100)   if total else 0}%")
     c5.metric("⚪ No Data", zeros)
 
-    # ── hub breakdown ─────────────────────────────────
-    st.divider()
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.subheader("Hub-wise RAG")
-        hubs = {}
-        for v in filtered:
-            h = v["hub"]
-            if h not in hubs: hubs[h] = {"Green":0,"Amber":0,"Red":0,"ZERO":0}
-            hubs[h][v["overall_rag"]] = hubs[h].get(v["overall_rag"],0) + 1
-        for hub, counts in sorted(hubs.items()):
-            total_h = sum(counts.values())
-            st.markdown(f"**{hub}** — {total_h} ventures")
-            hc1,hc2,hc3 = st.columns(3)
-            hc1.metric("🟢", counts.get("Green",0))
-            hc2.metric("🟡", counts.get("Amber",0))
-            hc3.metric("🔴", counts.get("Red",0))
+    # RAG progress bars
+    st.markdown("<br>", unsafe_allow_html=True)
+    for label, count, color in [
+        ("🟢 Green", greens, "#16a34a"),
+        ("🟡 Amber", ambers, "#d97706"),
+        ("🔴 Red",   reds,   "#dc2626"),
+    ]:
+        pct = round(count/total*100) if total else 0
+        st.markdown(f"**{label}** — {count} ventures ({pct}%)")
+        st.progress(pct/100)
 
-    with col_r:
-        st.subheader("Sprint Stage Distribution")
-        stage_counts = {}
-        for v in filtered:
-            stage_counts[v["bucket"]] = stage_counts.get(v["bucket"],0) + 1
-        for stage, cnt in sorted(stage_counts.items()):
-            pct = round(cnt/total*100) if total else 0
-            st.markdown(f"**{stage}** — {cnt} ventures ({pct}%)")
-            st.progress(pct/100)
+    # Sprint stage distribution
+    st.divider()
+    st.subheader("Sprint Stage Distribution")
+    stage_counts = {}
+    for v in filtered:
+        stage_counts[v["bucket"]] = stage_counts.get(v["bucket"],0) + 1
+    sc1, sc2 = st.columns(2)
+    for i, (stage, cnt) in enumerate(sorted(stage_counts.items())):
+        pct = round(cnt/total*100) if total else 0
+        col = sc1 if i % 2 == 0 else sc2
+        col.markdown(f"**{stage}** — {cnt} ventures ({pct}%)")
+        col.progress(pct/100)
 
     # ── venture table ─────────────────────────────────
     st.divider()
