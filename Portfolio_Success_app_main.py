@@ -310,30 +310,65 @@ def get_text(fpath):
         except: return ""
     return extract_text_local(fpath)
 
-def load_common_docs():
-    """Load all text from Common Documents folder."""
+@st.cache_data(show_spinner=False, ttl=600)
+def load_common_docs_cached(_sp_id, use_sp, root_path):
+    """Load all Common Documents and return full combined text."""
     texts = []
-    if use_sp and sp_reader:
+    if use_sp and ENV_CLIENT_ID:
         try:
-            items = sp_reader.list_files(COMMON_FOLDER)
-            for fname in items[:10]:  # limit to avoid timeout
+            from sharepoint_reader import SharePointReader
+            sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+            items = sp.list_files(COMMON_FOLDER)
+            for fname in items:
+                ext = Path(fname).suffix.lower()
+                if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: continue
                 fp = f"{COMMON_FOLDER}/{fname}"
                 try:
-                    content = sp_reader.download_file(fp)
+                    content = sp.download_file(fp)
                     text = extract_text_bytes(content, fname)
                     if text and len(text) > 50:
-                        texts.append(f"[{fname}]\n{text[:2000]}")
+                        texts.append(f"=== FILE: {fname} ===\n{text[:3000]}")
                 except: pass
         except: pass
     elif root_path:
         cpath = os.path.join(root_path, "Common Documents")
         if os.path.isdir(cpath):
-            for f in os.listdir(cpath)[:10]:
+            for f in os.listdir(cpath):
+                ext = Path(f).suffix.lower()
+                if ext not in [".xlsx",".xls",".docx",".pdf",".pptx"]: continue
                 fp = os.path.join(cpath, f)
                 if os.path.isfile(fp):
                     text = extract_text_local(fp)
-                    if text: texts.append(f"[{f}]\n{text[:2000]}")
+                    if text: texts.append(f"=== FILE: {f} ===\n{text[:3000]}")
     return "\n\n".join(texts)
+
+def extract_venture_from_common(venture_name, common_text):
+    """Extract only sections mentioning this venture from common docs."""
+    if not common_text or not venture_name: return ""
+    # Split by file sections
+    relevant = []
+    sections = common_text.split("=== FILE:")
+    for section in sections:
+        # Check if venture name appears in this section (case-insensitive)
+        if venture_name.lower() in section.lower():
+            # Extract paragraphs/lines mentioning the venture
+            lines = section.split("\n")
+            venture_lines = []
+            for i, line in enumerate(lines):
+                if venture_name.lower() in line.lower():
+                    # Include surrounding context (2 lines before and after)
+                    start = max(0, i-2)
+                    end   = min(len(lines), i+5)
+                    venture_lines.extend(lines[start:end])
+            if venture_lines:
+                fname = section.split("===")[0].strip() if "===" in section else "Common Doc"
+                relevant.append(f"[{fname}]\n" + "\n".join(venture_lines))
+    return "\n\n".join(relevant)[:2000]
+
+def load_common_docs():
+    """Wrapper to load common docs using cache."""
+    sp_id = id(sp_reader) if sp_reader else 0
+    return load_common_docs_cached(sp_id, use_sp, root_path)
 
 @st.cache_data(show_spinner=False, ttl=600)
 def compute_rag_ai(vname, notes, fb_text, tr_text, common_text, pct_raw, _client_key):
@@ -345,13 +380,16 @@ def compute_rag_ai(vname, notes, fb_text, tr_text, common_text, pct_raw, _client
         if pct <= 1: pct *= 100
     except: pct = 0
 
+    # Extract only sections mentioning this venture from common docs
+    venture_common = extract_venture_from_common(vname, common_text) if common_text else ""
+
     combined = f"""
 Venture: {vname}
 Sprint Completion: {pct:.0f}%
 Program Notes/Remarks: {notes[:800]}
 Session Feedback: {fb_text[:600]}
 Transcript: {tr_text[:600]}
-Common Documents (relevant excerpts): {common_text[:800]}
+Common Documents (venture-specific excerpts): {venture_common[:800]}
 """
     prompt = f"""Analyze this venture data and return ONLY a JSON object with 4 keys:
 - "momentum_rag": one of "Green", "Amber", "Red", "ZERO"
@@ -398,11 +436,7 @@ def rag_badge(rag):
 # ══════════════════════════════════════════════════════
 if view == "Portfolio Overview":
     st.title("📊 Portfolio Overview")
-    st.caption("NEN Accelerate · All ventures at a glance")
-
-    use_ai_rag = st.toggle("🤖 Compute RAG scores using AI", value=False,
-                            help="Uses Claude to score each venture. Takes 1-2 mins for full portfolio.")
-
+    st.caption("NEN Accelerate · All ventures at a glance — RAG scores powered by AI")
     st.divider()
 
     # ── filters ──────────────────────────────────────
@@ -414,77 +448,67 @@ if view == "Portfolio Overview":
     rag_f    = fc3.selectbox("RAG Filter",      ["All","🟢 Green","🟡 Amber","🔴 Red","⚪ ZERO"])
     stage_f  = fc4.selectbox("Sprint Stage",    ["All","0–25%","26–50%","51–75%","76–99%","100%"])
 
-    # ── compute scores ────────────────────────────────
+    # ── compute scores (AI by default) ───────────────
     venture_data = []
-    common_text  = ""
-    if use_ai_rag:
-        with st.spinner("Loading common documents..."):
-            common_text = load_common_docs()
+    cache_key    = "rag_scores_ai"
 
-    # ── use cached scores if available ──────────────
-    cache_key = f"rag_scores_{'ai' if use_ai_rag else 'kw'}"
-    
-    if st.button("🔄 Refresh Scores", help="Recompute all RAG scores"):
+    col_ref, col_info = st.columns([1, 4])
+    if col_ref.button("🔄 Refresh Scores", help="Recompute all RAG scores"):
         st.session_state.pop(cache_key, None)
-        st.session_state.pop("common_text_cache", None)
+        st.session_state.pop("common_docs_cache", None)
 
     if cache_key in st.session_state:
         venture_data = st.session_state[cache_key]
-        st.caption(f"✅ Using cached scores — click 'Refresh Scores' to recompute")
+        col_info.caption("✅ Using cached AI scores — click 'Refresh Scores' to recompute")
     else:
-        # ── keyword scores (instant, no API) ─────────
-        for idx, vname in enumerate(ventures_raw):
-            row    = get_row(vname)
-            hub    = cv(row, col_hub)
-            vp     = cv(row, col_vp) if col_vp else "—"
-            sprint = cv(row, col_sprint)
-            rev    = cv(row, col_rev)
-            notes  = cv(row, col_notes, default="")
-            pct_raw= row[col_pct] if (row is not None and col_pct) else None
-            bucket = get_stage_bucket(pct_raw)
+        if not client:
+            col_info.warning("⚠️ No Anthropic API key found. Add it to Streamlit secrets as ANTHROPIC_API_KEY.")
 
-            signals  = detect_signals(notes or "")
-            sig_types= [s["type"] for s in signals]
-            i_rag    = "Green" if any(t in sig_types for t in ["Hired","Investment / Spend","Self-Funded Sprint"]) else "ZERO"
-            try:
-                p = float(str(pct_raw).replace("%","").strip())
-                if p <= 1: p *= 100
-                m_rag = "Green" if p >= 60 else ("Amber" if p >= 30 else ("Red" if p > 0 else "ZERO"))
-            except: m_rag = "ZERO"
-
+        # Step 1: Build basic venture list instantly
+        for vname in ventures_raw:
+            row = get_row(vname)
             venture_data.append({
-                "name": vname, "hub": hub, "vp": vp, "sprint": sprint,
-                "rev": rev, "bucket": bucket, "pct_raw": pct_raw,
-                "momentum_rag": m_rag, "investment_rag": i_rag,
-                "overall_rag": combine_rag(m_rag, i_rag),
-                "momentum_reason": f"Sprint: {bucket}",
-                "investment_reason": ", ".join(sig_types) if sig_types else "No signals",
-                "notes": notes
+                "name":    vname,
+                "hub":     cv(row, col_hub),
+                "vp":      cv(row, col_vp) if col_vp else "—",
+                "sprint":  cv(row, col_sprint),
+                "rev":     cv(row, col_rev),
+                "bucket":  get_stage_bucket(row[col_pct] if (row is not None and col_pct) else None),
+                "pct_raw": row[col_pct] if (row is not None and col_pct) else None,
+                "notes":   cv(row, col_notes, default=""),
+                "momentum_rag":    "ZERO",
+                "investment_rag":  "ZERO",
+                "overall_rag":     "ZERO",
+                "momentum_reason": "Pending",
+                "investment_reason": "Pending",
             })
 
-        # ── AI enrichment (only if toggled, parallel) ─
-        if use_ai_rag and client:
+        # Step 2: Load common documents once
+        with st.spinner("📂 Loading Common Documents..."):
+            common_text = load_common_docs()
+        col_info.caption(f"📂 Common Documents loaded: {len(common_text)} chars")
+
+        # Step 3: AI scoring in parallel (skip ventures with no data)
+        if client:
             import concurrent.futures
 
-            ventures_with_data = [v for v in venture_data if v["notes"] and v["notes"] != "—"]
+            ventures_with_data = [v for v in venture_data
+                                   if v["notes"] and v["notes"] not in ["—","Pending",""]]
             ventures_no_data   = [v for v in venture_data if v not in ventures_with_data]
 
-            # Mark no-data ventures as ZERO immediately
+            # Mark no-data ventures ZERO immediately
             for v in ventures_no_data:
-                v["momentum_rag"] = "ZERO"
-                v["investment_rag"] = "ZERO"
-                v["overall_rag"] = "ZERO"
-                v["momentum_reason"] = "No data available"
+                v["momentum_reason"]   = "No data available"
                 v["investment_reason"] = "No data available"
 
             if ventures_with_data:
-                prog = st.progress(0, text=f"AI scoring {len(ventures_with_data)} ventures with data...")
+                prog = st.progress(0, text=f"🤖 AI scoring {len(ventures_with_data)} ventures...")
                 completed = [0]
 
                 def score_one(v):
                     vfiles  = load_v_files(v["name"])
-                    fb_text = get_text(vfiles.get("feedback",""))   if "feedback"   in vfiles else ""
-                    tr_text = get_text(vfiles.get("transcript","")) if "transcript" in vfiles else ""
+                    fb_text = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+                    tr_text = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
                     m, i, mr, ir = compute_rag_ai(
                         v["name"], v["notes"], fb_text, tr_text,
                         common_text, v["pct_raw"], api_key)
@@ -495,27 +519,27 @@ if view == "Portfolio Overview":
                     futures = {ex.submit(score_one, v): v for v in ventures_with_data}
                     for fut in concurrent.futures.as_completed(futures):
                         try:
-                            vname_r, m, i, mr, ir = fut.result()
-                            results[vname_r] = (m, i, mr, ir)
+                            vn, m, i, mr, ir = fut.result()
+                            results[vn] = (m, i, mr, ir)
                         except: pass
                         completed[0] += 1
-                        prog.progress(completed[0]/len(ventures_with_data),
-                                      text=f"Scored {completed[0]}/{len(ventures_with_data)} ventures...")
-
+                        prog.progress(
+                            completed[0] / len(ventures_with_data),
+                            text=f"🤖 Scored {completed[0]}/{len(ventures_with_data)} ventures..."
+                        )
                 prog.empty()
 
-                # Update venture_data with AI results
                 for v in venture_data:
                     if v["name"] in results:
                         m, i, mr, ir = results[v["name"]]
-                        v["momentum_rag"]    = m
-                        v["investment_rag"]  = i
-                        v["overall_rag"]     = combine_rag(m, i)
-                        v["momentum_reason"] = mr
+                        v["momentum_rag"]      = m
+                        v["investment_rag"]    = i
+                        v["overall_rag"]       = combine_rag(m, i)
+                        v["momentum_reason"]   = mr
                         v["investment_reason"] = ir
 
         st.session_state[cache_key] = venture_data
-        st.caption(f"✅ Scores computed for {len(venture_data)} ventures")
+        st.success(f"✅ AI scores computed for {len([v for v in venture_data if v['overall_rag'] != 'ZERO'])} ventures")
 
     # ── apply filters ─────────────────────────────────
     filtered = venture_data
@@ -579,6 +603,18 @@ if view == "Portfolio Overview":
     st.divider()
     st.subheader(f"Venture List ({len(filtered)} ventures)")
 
+    # Table header
+    h0,h1,h2,h3,h4,h5,h6,h7 = st.columns([3,1.2,1.2,1.2,1.2,1,1,1])
+    h0.markdown("**Venture**")
+    h1.markdown("**Overall RAG**")
+    h2.markdown("**Momentum**")
+    h3.markdown("**Investment**")
+    h4.markdown("**Hub**")
+    h5.markdown("**Sprint Stage**")
+    h6.markdown("**Revenue (Cr)**")
+    h7.markdown("**Action**")
+    st.divider()
+
     # Sort by RAG severity
     filtered_sorted = sorted(filtered, key=lambda x: RAG_ORDER.get(x["overall_rag"],4))
 
@@ -587,25 +623,27 @@ if view == "Portfolio Overview":
         i_badge = rag_badge(v["investment_rag"])
         o_badge = rag_badge(v["overall_rag"])
 
-        with st.expander(f"{RAG_EMOJI.get(v['overall_rag'],'⚪')} {v['name']}  ·  {v['hub']}  ·  {v['bucket']}"):
-            r1, r2, r3, r4 = st.columns(4)
-            r1.markdown(f"**Overall RAG**<br>{o_badge}", unsafe_allow_html=True)
-            r2.markdown(f"**Momentum**<br>{m_badge}", unsafe_allow_html=True)
-            r3.markdown(f"**Self Investment**<br>{i_badge}", unsafe_allow_html=True)
-            r4.metric("Revenue LY (Cr)", v["rev"])
+        c0,c1,c2,c3,c4,c5,c6,c7 = st.columns([3,1.2,1.2,1.2,1.2,1,1,1])
+        c0.markdown(f"**{v['name']}**")
+        c1.markdown(o_badge, unsafe_allow_html=True)
+        c2.markdown(m_badge, unsafe_allow_html=True)
+        c3.markdown(i_badge, unsafe_allow_html=True)
+        c4.markdown(f"<small>{v['hub']}</small>", unsafe_allow_html=True)
+        c5.markdown(f"<small>{v['bucket']}</small>", unsafe_allow_html=True)
+        c6.markdown(f"<small>{v['rev']}</small>", unsafe_allow_html=True)
+        if c7.button("→", key=f"open_{v['name']}", help="Open Venture Card"):
+            st.session_state["selected_venture"] = v["name"]
+            st.session_state["jump_to_venture"]  = True
+            st.rerun()
 
-            if v["momentum_reason"] != "—":
-                st.caption(f"📈 Momentum: {v['momentum_reason']}")
-            if v["investment_reason"] != "—":
-                st.caption(f"💰 Investment: {v['investment_reason']}")
+        # Expandable reasons row
+        with st.expander("", expanded=False):
+            if v["momentum_reason"] and v["momentum_reason"] != "—":
+                st.caption(f"📈 **Momentum:** {v['momentum_reason']}")
+            if v["investment_reason"] and v["investment_reason"] != "—":
+                st.caption(f"💰 **Investment:** {v['investment_reason']}")
             if v["notes"]:
                 st.info(v["notes"][:400])
-
-            # Link to venture card
-            if st.button(f"Open Venture Card →", key=f"open_{v['name']}"):
-                st.session_state["selected_venture"] = v["name"]
-                st.session_state["jump_to_venture"]  = True
-                st.rerun()
 
 # ══════════════════════════════════════════════════════
 #  VIEW 2: VENTURE CARDS
@@ -678,6 +716,21 @@ elif view == "Venture Cards":
                 st.markdown(f"**Sprint Completion: {pct_num:.0f}%** — `{bucket}`")
                 safe_pct = max(0.0, min(pct_num/100, 1.0)) if pct_num else 0.0
                 st.progress(safe_pct)
+
+                # ── RAG scores ───────────────────────
+                st.markdown("#### RAG Scores")
+
+                # Get cached scores if available
+                cached = st.session_state.get("rag_scores_ai") or st.session_state.get("rag_scores_kw") or []
+                v_score = next((s for s in cached if s["name"] == vname), None)
+
+                if v_score:
+                    rs1, rs2, rs3 = st.columns(3)
+                    rs1.markdown(f"**Overall RAG**<br>{rag_badge(v_score['overall_rag'])}<br><small>{''}</small>", unsafe_allow_html=True)
+                    rs2.markdown(f"**Sprint Momentum**<br>{rag_badge(v_score['momentum_rag'])}<br><small>{v_score.get('momentum_reason','')[:80]}</small>", unsafe_allow_html=True)
+                    rs3.markdown(f"**Self Investment**<br>{rag_badge(v_score['investment_rag'])}<br><small>{v_score.get('investment_reason','')[:80]}</small>", unsafe_allow_html=True)
+                else:
+                    st.caption("RAG scores not computed yet. Go to Portfolio Overview and enable scoring first.")
 
                 if notes:
                     st.markdown("**📝 Remarks:**")
