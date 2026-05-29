@@ -171,9 +171,6 @@ with st.sidebar:
     api_key = ENV_API_KEY or st.text_input("Anthropic API Key", type="password")
 
     st.markdown("---")
-    view = st.radio("📂 View", ["📊 Portfolio Overview", "🏢 Venture Cards"], label_visibility="collapsed")
-    view = view.split(" ",1)[1]
-    st.markdown("---")
     st.caption("NEN Accelerate · Portfolio Intelligence\nResources Network Team")
 
 # ── SP reader ─────────────────────────────────────────
@@ -431,10 +428,13 @@ def rag_badge(rag):
     emoji = RAG_EMOJI.get(rag, "⚪")
     return f'<span class="{css}">{emoji} {rag}</span>'
 
+# ── top navigation tabs ──────────────────────────────
+tab_overview, tab_ventures = st.tabs(["📊  Portfolio Overview", "🏢  Venture Cards"])
+
 # ══════════════════════════════════════════════════════
 #  VIEW 1: PORTFOLIO OVERVIEW
 # ══════════════════════════════════════════════════════
-if view == "Portfolio Overview":
+with tab_overview:
     st.title("📊 Portfolio Overview")
     st.caption("NEN Accelerate · All ventures at a glance — RAG scores powered by AI")
     st.divider()
@@ -658,7 +658,7 @@ if view == "Portfolio Overview":
 # ══════════════════════════════════════════════════════
 #  VIEW 2: VENTURE CARDS
 # ══════════════════════════════════════════════════════
-elif view == "Venture Cards":
+with tab_ventures:
     st.title("🏢 Venture Cards")
     st.caption("Individual venture deep-dive")
     st.divider()
