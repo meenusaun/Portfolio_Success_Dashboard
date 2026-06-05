@@ -311,13 +311,12 @@ def get_text(fpath):
 
 @st.cache_data(show_spinner=False, ttl=600)
 def load_common_docs_cached(_sp_id, use_sp, root_path):
-    """Load all Common Documents and return full combined text."""
+    """Load all Common Documents recursively (including sub-folders)."""
     texts = []
 
     def process_file(fname, content_bytes=None, fpath=None):
         ext = Path(fname).suffix.lower()
         if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
-        # Skip the main dashboard file — it's already loaded at startup
         if "journey_accelerate_portfolio" in fname.lower(): return
         try:
             if content_bytes:
@@ -325,31 +324,41 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
             else:
                 text = extract_text_local(fpath)
             if not text or len(text) < 50: return
-
-            # Give more content to the portfolio dashboard — it has all ventures
-            is_dashboard = "journey_accelerate_portfolio" in fname.lower() or \
-                           "portfolio dashboard" in fname.lower()
-            limit = 15000 if is_dashboard else 3000
-            texts.append(f"=== FILE: {fname} ===\n{text[:limit]}")
+            texts.append(f"=== FILE: {fname} ===\n{text[:3000]}")
         except: pass
 
     if use_sp and ENV_CLIENT_ID:
         try:
             from sharepoint_reader import SharePointReader
             sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-            items = sp.list_files(COMMON_FOLDER)
-            for fname in items:
-                fp = f"{COMMON_FOLDER}/{fname}"
+
+            def scan_sp_folder(folder_path):
+                """Recursively scan SharePoint folder."""
                 try:
-                    content = sp.download_file(fp)
-                    process_file(fname, content_bytes=content)
+                    items = sp.list_folder(folder_path)
+                    for item in items:
+                        item_name = item.get("name","")
+                        item_path = f"{folder_path}/{item_name}"
+                        if "folder" in item:
+                            # Recurse into sub-folder
+                            scan_sp_folder(item_path)
+                        elif "file" in item:
+                            try:
+                                content = sp.download_file(item_path)
+                                process_file(item_name, content_bytes=content)
+                            except: pass
                 except: pass
+
+            scan_sp_folder(COMMON_FOLDER)
         except: pass
+
     elif root_path:
         cpath = os.path.join(root_path, "Common Documents")
         if os.path.isdir(cpath):
-            for f in os.listdir(cpath):
-                process_file(f, fpath=os.path.join(cpath, f))
+            # Walk all sub-folders recursively
+            for dirpath, dirnames, filenames in os.walk(cpath):
+                for f in filenames:
+                    process_file(f, fpath=os.path.join(dirpath, f))
 
     return "\n\n".join(texts)
 
@@ -416,21 +425,35 @@ def load_attendance_data(_sp_id, use_sp, root_path):
         if use_sp and ENV_CLIENT_ID:
             from sharepoint_reader import SharePointReader
             sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-            items = sp.list_files(COMMON_FOLDER)
-            for fname in items:
-                if any(kw in fname.lower() for kw in ATTENDANCE_KEYWORDS):
-                    content_bytes = sp.download_file(f"{COMMON_FOLDER}/{fname}")
-                    fname_found   = fname
-                    break
+
+            def find_in_sp(folder_path):
+                """Recursively search for attendance file."""
+                try:
+                    items = sp.list_folder(folder_path)
+                    for item in items:
+                        iname = item.get("name","")
+                        ipath = f"{folder_path}/{iname}"
+                        if "folder" in item:
+                            result = find_in_sp(ipath)
+                            if result: return result
+                        elif any(kw in iname.lower() for kw in ATTENDANCE_KEYWORDS):
+                            return sp.download_file(ipath), iname
+                except: pass
+                return None, None
+
+            content_bytes, fname_found = find_in_sp(COMMON_FOLDER)
+
         elif root_path:
             cpath = os.path.join(root_path, "Common Documents")
             if os.path.isdir(cpath):
-                for f in os.listdir(cpath):
-                    if any(kw in f.lower() for kw in ATTENDANCE_KEYWORDS):
-                        with open(os.path.join(cpath, f), "rb") as fh:
-                            content_bytes = fh.read()
-                        fname_found = f
-                        break
+                for dirpath, _, filenames in os.walk(cpath):
+                    for f in filenames:
+                        if any(kw in f.lower() for kw in ATTENDANCE_KEYWORDS):
+                            with open(os.path.join(dirpath, f), "rb") as fh:
+                                content_bytes = fh.read()
+                            fname_found = f
+                            break
+                    if fname_found: break
 
         if not content_bytes or not fname_found:
             return attendance
