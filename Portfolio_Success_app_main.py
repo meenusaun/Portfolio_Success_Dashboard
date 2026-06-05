@@ -790,56 +790,82 @@ with tab_overview:
     c4.metric("🔴 Red",    reds,   f"{round(reds/total*100)   if total else 0}%")
     c5.metric("⚪ No Data", zeros)
 
-    # RAG progress bars
-    st.markdown("<br>", unsafe_allow_html=True)
-    for label, count, color in [
-        ("🟢 Green", greens, "#16a34a"),
-        ("🟡 Amber", ambers, "#d97706"),
-        ("🔴 Red",   reds,   "#dc2626"),
-    ]:
-        pct = round(count/total*100) if total else 0
-        st.markdown(f"**{label}** — {count} ventures ({pct}%)")
-        st.progress(pct/100)
-
-    # Sprint stage distribution
     st.divider()
-    st.subheader("Sprint Stage Distribution")
-    stage_counts = {}
-    for v in filtered:
-        stage_counts[v["bucket"]] = stage_counts.get(v["bucket"],0) + 1
-    sc1, sc2 = st.columns(2)
-    for i, (stage, cnt) in enumerate(sorted(stage_counts.items())):
-        pct = round(cnt/total*100) if total else 0
-        col = sc1 if i % 2 == 0 else sc2
-        col.markdown(f"**{stage}** — {cnt} ventures ({pct}%)")
-        col.progress(pct/100)
 
-    # ── hub pivot table with scores ──────────────────
+    # ── 2-column layout ───────────────────────────────
+    left_col, right_col = st.columns(2)
+
+    # LEFT: RAG distribution + Sprint Stage
+    with left_col:
+        st.subheader("RAG Distribution")
+        for label, count, color in [
+            ("🟢 Green", greens, "#16a34a"),
+            ("🟡 Amber", ambers, "#d97706"),
+            ("🔴 Red",   reds,   "#dc2626"),
+        ]:
+            pct = round(count/total*100) if total else 0
+            st.markdown(f"**{label}** — {count} ventures ({pct}%)")
+            st.progress(pct/100)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("Sprint Stage Distribution")
+        stage_counts = {}
+        for v in filtered:
+            stage_counts[v["bucket"]] = stage_counts.get(v["bucket"],0) + 1
+        for stage, cnt in sorted(stage_counts.items()):
+            pct = round(cnt/total*100) if total else 0
+            st.markdown(f"**{stage}** — {cnt} ventures ({pct}%)")
+            st.progress(pct/100)
+
+    # RIGHT: Hub-wise RAG count table
+    with right_col:
+        st.subheader("Hub-wise RAG Count")
+        hub_rag = {}
+        for v in filtered:
+            h = v["hub"] if v["hub"] not in ["—","Other"] else "Other"
+            if h not in hub_rag:
+                hub_rag[h] = {"Green":0,"Amber":0,"Red":0,"ZERO":0,"Total":0}
+            hub_rag[h][v["overall_rag"]] = hub_rag[h].get(v["overall_rag"],0) + 1
+            hub_rag[h]["Total"] += 1
+
+        h0,h1,h2,h3,h4,h5 = st.columns([2.2,0.8,0.8,0.8,0.8,0.8])
+        h0.markdown("**Hub**"); h1.markdown("**Total**")
+        h2.markdown("**🟢**");  h3.markdown("**🟡**")
+        h4.markdown("**🔴**");  h5.markdown("**⚪**")
+        st.divider()
+        for hub, counts in sorted(hub_rag.items(), key=lambda x:-x[1]["Total"]):
+            r0,r1,r2,r3,r4,r5 = st.columns([2.2,0.8,0.8,0.8,0.8,0.8])
+            r0.markdown(f"**{hub}**")
+            r1.markdown(f"**{counts['Total']}**")
+            r2.markdown(f"<span style='color:#16a34a;font-weight:700'>{counts.get('Green',0)}</span>", unsafe_allow_html=True)
+            r3.markdown(f"<span style='color:#d97706;font-weight:700'>{counts.get('Amber',0)}</span>", unsafe_allow_html=True)
+            r4.markdown(f"<span style='color:#dc2626;font-weight:700'>{counts.get('Red',0)}</span>",   unsafe_allow_html=True)
+            r5.markdown(f"<span style='color:#94a3b8;font-weight:700'>{counts.get('ZERO',0)}</span>",  unsafe_allow_html=True)
+        st.divider()
+        t0,t1,t2,t3,t4,t5 = st.columns([2.2,0.8,0.8,0.8,0.8,0.8])
+        t0.markdown("**Total**")
+        t1.markdown(f"**{len(filtered)}**")
+        t2.markdown(f"**{greens}**"); t3.markdown(f"**{ambers}**")
+        t4.markdown(f"**{reds}**");   t5.markdown(f"**{zeros}**")
+
+    # ── hub pivot table with scores (full width) ──────
     st.divider()
-    st.subheader("Hub-wise Venture Count & Avg Score")
-    st.caption("Avg Score based on 10-point matrix: Momentum × Investment RAG combination")
+    st.subheader("Hub-wise Venture Score (Sprint Momentum × Self Investment)")
+    st.caption("Avg Score based on 10-point matrix")
 
-    # Build pivot data
     hub_pivot = {}
     for v in filtered:
         h = v["hub"] if v["hub"] not in ["—","Other"] else "Other"
         m = v["momentum_rag"]
-        if h not in hub_pivot:
-            hub_pivot[h] = {}
-        if m not in hub_pivot[h]:
-            hub_pivot[h][m] = {"count": 0, "scores": []}
+        if h not in hub_pivot: hub_pivot[h] = {}
+        if m not in hub_pivot[h]: hub_pivot[h][m] = {"count":0,"scores":[]}
         hub_pivot[h][m]["count"]  += 1
-        hub_pivot[h][m]["scores"].append(v.get("momentum_score", 0))
+        hub_pivot[h][m]["scores"].append(v.get("momentum_score",0))
 
-    # Header
-    ph0,ph1,ph2,ph3,ph4,ph5,ph6 = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
-    ph0.markdown("**Hub**")
-    ph1.markdown("**Sprint Momentum**")
-    ph2.markdown("**Count (X)**")
-    ph3.markdown("**Avg Score**")
-    ph4.markdown("**🟢 Green**")
-    ph5.markdown("**🟡 Amber**")
-    ph6.markdown("**🔴 Red**")
+    ph0,ph1,ph2,ph3,ph4,ph5,ph6 = st.columns([2.2,1.2,0.8,0.8,0.8,0.8,0.8])
+    ph0.markdown("**Hub**");           ph1.markdown("**Sprint Momentum**")
+    ph2.markdown("**Count**");         ph3.markdown("**Avg Score**")
+    ph4.markdown("**🟢**");            ph5.markdown("**🟡**"); ph6.markdown("**🔴**")
     st.divider()
 
     grand_total = 0; grand_scores = []
@@ -848,79 +874,37 @@ with tab_overview:
         hub_greens = hub_pivot[hub].get("Green",{}).get("count",0)
         hub_ambers = hub_pivot[hub].get("Amber",{}).get("count",0)
         hub_reds   = hub_pivot[hub].get("Red",{}).get("count",0)
+        first_row  = True
 
-        for m_rag, data in hub_pivot[hub].items():
-            c0,c1,c2,c3,c4,c5,c6 = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
+        for m_rag in ["Green","Amber","Red","ZERO"]:
+            if m_rag not in hub_pivot[hub]: continue
+            data   = hub_pivot[hub][m_rag]
             scores = data["scores"]
             avg    = round(sum(scores)/len(scores),1) if scores else 0.0
-            hub_total   += data["count"]
+            hub_total      += data["count"]
             hub_scores_all.extend(scores)
             grand_scores.extend(scores)
-            
-            c0.markdown(f"**{hub}**" if hub_total == data["count"] else "")
-            c1.markdown(f"{RAG_EMOJI.get(m_rag,'⚪')} {m_rag}")
-            c2.markdown(f"**{data['count']}**")
-            c3.markdown(f"**{avg}**")
-            c4.markdown(f"<span style='color:#16a34a;font-weight:700'>{hub_greens}</span>" if hub_total==data["count"] else "", unsafe_allow_html=True)
-            c5.markdown(f"<span style='color:#d97706;font-weight:700'>{hub_ambers}</span>" if hub_total==data["count"] else "", unsafe_allow_html=True)
-            c6.markdown(f"<span style='color:#dc2626;font-weight:700'>{hub_reds}</span>"   if hub_total==data["count"] else "", unsafe_allow_html=True)
 
-        # Hub total row
+            c0,c1,c2,c3,c4,c5,c6 = st.columns([2.2,1.2,0.8,0.8,0.8,0.8,0.8])
+            c0.markdown(f"**{hub}**" if first_row else "")
+            c1.markdown(f"{RAG_EMOJI.get(m_rag,'⚪')} {m_rag}")
+            c2.markdown(f"{data['count']}")
+            c3.markdown(f"**{avg}**")
+            if first_row:
+                c4.markdown(f"<span style='color:#16a34a;font-weight:700'>{hub_greens}</span>", unsafe_allow_html=True)
+                c5.markdown(f"<span style='color:#d97706;font-weight:700'>{hub_ambers}</span>", unsafe_allow_html=True)
+                c6.markdown(f"<span style='color:#dc2626;font-weight:700'>{hub_reds}</span>",   unsafe_allow_html=True)
+            first_row = False
+
         hub_avg = round(sum(hub_scores_all)/len(hub_scores_all),1) if hub_scores_all else 0.0
         grand_total += hub_total
-        t0,t1,t2,t3,_,_,_ = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
-        t0.markdown(f"**{hub} Total**")
-        t1.markdown("")
-        t2.markdown(f"**{hub_total}**")
-        t3.markdown(f"**{hub_avg}**")
+        t0,t1,t2,t3,_,_,_ = st.columns([2.2,1.2,0.8,0.8,0.8,0.8,0.8])
+        t0.markdown(f"**{hub} Total**"); t2.markdown(f"**{hub_total}**"); t3.markdown(f"**{hub_avg}**")
         st.divider()
 
-    # Grand total
     grand_avg = round(sum(grand_scores)/len(grand_scores),1) if grand_scores else 0.0
-    g0,g1,g2,g3,_,_,_ = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
-    g0.markdown("**Grand Total**")
-    g1.markdown("")
-    g2.markdown(f"**{grand_total}**")
-    g3.markdown(f"**{grand_avg}**")
-
-    # Build hub data
-    hub_rag = {}
-    for v in filtered:
-        h = v["hub"] if v["hub"] != "—" else "Other"
-        if h not in hub_rag:
-            hub_rag[h] = {"Green":0,"Amber":0,"Red":0,"ZERO":0,"Total":0}
-        hub_rag[h][v["overall_rag"]] = hub_rag[h].get(v["overall_rag"],0) + 1
-        hub_rag[h]["Total"] += 1
-
-    # Table header
-    h0,h1,h2,h3,h4,h5 = st.columns([2,1,1,1,1,1])
-    h0.markdown("**Hub**")
-    h1.markdown("**Total**")
-    h2.markdown("**🟢 Green**")
-    h3.markdown("**🟡 Amber**")
-    h4.markdown("**🔴 Red**")
-    h5.markdown("**⚪ No Data**")
-    st.divider()
-
-    for hub, counts in sorted(hub_rag.items(), key=lambda x: -x[1]["Total"]):
-        c0,c1,c2,c3,c4,c5 = st.columns([2,1,1,1,1,1])
-        total_h = counts["Total"]
-        c0.markdown(f"**{hub}**")
-        c1.markdown(f"**{total_h}**")
-        c2.markdown(f"<span style='color:#16a34a;font-weight:700'>{counts.get('Green',0)}</span>", unsafe_allow_html=True)
-        c3.markdown(f"<span style='color:#d97706;font-weight:700'>{counts.get('Amber',0)}</span>", unsafe_allow_html=True)
-        c4.markdown(f"<span style='color:#dc2626;font-weight:700'>{counts.get('Red',0)}</span>", unsafe_allow_html=True)
-        c5.markdown(f"<span style='color:#94a3b8;font-weight:700'>{counts.get('ZERO',0)}</span>", unsafe_allow_html=True)
-    
-    st.divider()
-    # Totals row
-    t0,t1,t2,t3,t4,t5 = st.columns([2,1,1,1,1,1])
-    t0.markdown("**Total**")
-    t1.markdown(f"**{len(filtered)}**")
-    t2.markdown(f"**{sum(c.get('Green',0) for c in hub_rag.values())}**")
-    t3.markdown(f"**{sum(c.get('Amber',0) for c in hub_rag.values())}**")
-    t4.markdown(f"**{sum(c.get('Red',0) for c in hub_rag.values())}**")
-    t5.markdown(f"**{sum(c.get('ZERO',0) for c in hub_rag.values())}**")
+    g0,_,g2,g3,_,_,_ = st.columns([2.2,1.2,0.8,0.8,0.8,0.8,0.8])
+    g0.markdown("**Grand Total**"); g2.markdown(f"**{grand_total}**"); g3.markdown(f"**{grand_avg}**")
 
 # ══════════════════════════════════════════════════════
 #  VIEW 2: VENTURE CARDS
