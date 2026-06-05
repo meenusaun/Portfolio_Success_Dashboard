@@ -130,14 +130,14 @@ def extract_text_local(fpath):
         fp = safe_copy(fpath)
         if ext in [".xlsx",".xls"]:
             xl = pd.ExcelFile(fp)
-            return "\n".join(pd.read_excel(fp,sheet_name=s,header=None).fillna("").astype(str).to_string() for s in xl.sheet_names)[:6000]
+            return "\n".join(pd.read_excel(fp,sheet_name=s,header=None).fillna("").astype(str).to_string() for s in xl.sheet_names)[:20000]
         elif ext == ".docx":
             from docx import Document
-            return "\n".join(p.text for p in Document(fp).paragraphs)[:6000]
+            return "\n".join(p.text for p in Document(fp).paragraphs)[:20000]
         elif ext == ".pdf":
             import pdfplumber
             with pdfplumber.open(fp) as pdf:
-                return "\n".join(p.extract_text() or "" for p in pdf.pages)[:6000]
+                return "\n".join(p.extract_text() or "" for p in pdf.pages)[:20000]
     except Exception as e: return f"[Error: {e}]"
     return ""
 
@@ -277,28 +277,53 @@ def cv(row, col, default="—"):
     except: return v
 
 def load_v_files(vname):
+    """Load ALL files from venture folder — not just keyword-matched ones."""
     files = {}
+    VALID_EXT = [".xlsx",".xls",".docx",".pdf",".pptx",".ppt",".txt"]
+
     if use_sp and sp_reader:
         folder = f"{SP_FOLDER}/{vname}"
         try:
             items = sp_reader.list_files(folder)
             for fname in items:
-                fl = fname.lower(); fp = f"{folder}/{fname}"
-                if "transcript"   in fl: files["transcript"]     = fp
-                elif "feedback"   in fl: files["feedback"]       = fp
-                elif "growth sprint" in fl or "sprint plan" in fl: files["sprint"]  = fp
-                elif "growth journey" in fl or "journey report" in fl: files["journey"] = fp
+                fl  = fname.lower()
+                fp  = f"{folder}/{fname}"
+                ext = Path(fname).suffix.lower()
+                if ext not in VALID_EXT: continue
+                # Categorise by keyword, but also keep ALL as "other_N"
+                if "transcript"   in fl:
+                    files["transcript"] = fp
+                elif "feedback"   in fl:
+                    files["feedback"]   = fp
+                elif "growth sprint" in fl or "sprint plan" in fl:
+                    files["sprint"]     = fp
+                elif "growth journey" in fl or "journey report" in fl:
+                    files["journey"]    = fp
+                else:
+                    # Read all other files too
+                    key = f"other_{len([k for k in files if k.startswith('other')])}"
+                    files[key] = fp
         except: pass
     else:
         vpath = os.path.join(root_path or "", vname)
         if os.path.isdir(vpath):
             for f in os.listdir(vpath):
-                fl = f.lower(); fp = os.path.join(vpath, f)
+                fl  = f.lower()
+                fp  = os.path.join(vpath, f)
+                ext = Path(f).suffix.lower()
                 if not os.path.isfile(fp): continue
-                if "transcript"   in fl: files["transcript"]     = fp
-                elif "feedback"   in fl: files["feedback"]       = fp
-                elif "growth sprint" in fl or "sprint plan" in fl: files["sprint"]  = fp
-                elif "growth journey" in fl or "journey report" in fl: files["journey"] = fp
+                if ext not in VALID_EXT: continue
+                if "transcript"   in fl:
+                    files["transcript"] = fp
+                elif "feedback"   in fl:
+                    files["feedback"]   = fp
+                elif "growth sprint" in fl or "sprint plan" in fl:
+                    files["sprint"]     = fp
+                elif "growth journey" in fl or "journey report" in fl:
+                    files["journey"]    = fp
+                else:
+                    key = f"other_{len([k for k in files if k.startswith('other')])}"
+                    files[key] = fp
     return files
 
 def get_text(fpath):
@@ -324,7 +349,9 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
             else:
                 text = extract_text_local(fpath)
             if not text or len(text) < 50: return
-            texts.append(f"=== FILE: {fname} ===\n{text[:3000]}")
+            # Store full content up to 25000 chars per file
+            # Enough for ~15-20 pages — truncation per venture at extraction time
+            texts.append(f"=== FILE: {fname} ===\n{text[:25000]}")
         except: pass
 
     if use_sp and ENV_CLIENT_ID:
@@ -363,28 +390,26 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
     return "\n\n".join(texts)
 
 def extract_venture_from_common(venture_name, common_text, file_keyword=None):
-    """Extract only sections mentioning this venture from common docs.
-    Also pulls venture row data directly from the loaded company_df."""
+    """Extract all sections mentioning this venture from common docs."""
     if not venture_name: return ""
     relevant = []
 
-    # Source 1: Pull directly from already-loaded company_df (dashboard Excel)
+    # Source 1: Pull all columns from already-loaded company_df
     try:
         if col_name and company_df is not None:
             match = all_rows[all_rows[col_name].astype(str).str.strip() == venture_name]
             if not match.empty:
                 row = match.iloc[0]
-                # Build a rich text summary of all non-empty columns
                 row_parts = []
                 for col in company_df.columns:
                     val = str(row[col]).strip()
                     if val and val not in ["nan","None","NaT",""]:
                         row_parts.append(f"{col}: {val}")
                 if row_parts:
-                    relevant.append(f"[Portfolio Dashboard — {venture_name} row]\n" + "\n".join(row_parts))
+                    relevant.append(f"[Portfolio Dashboard — {venture_name}]\n" + "\n".join(row_parts))
     except: pass
 
-    # Source 2: Common Documents text search
+    # Source 2: Common Documents — extract ALL text around venture mentions
     if common_text:
         sections = common_text.split("=== FILE:")
         for section in sections:
@@ -394,17 +419,26 @@ def extract_venture_from_common(venture_name, common_text, file_keyword=None):
                 continue
             if venture_name.lower() not in section.lower():
                 continue
+
             lines = section.split("\n")
             venture_lines = []
-            for i, line in enumerate(lines):
-                if venture_name.lower() in line.lower():
-                    start = max(0, i-2)
-                    end   = min(len(lines), i+8)
-                    venture_lines.extend(lines[start:end])
+            i = 0
+            while i < len(lines):
+                if venture_name.lower() in lines[i].lower():
+                    # Extract a wide context window — 5 lines before, 15 lines after
+                    start = max(0, i-5)
+                    end   = min(len(lines), i+15)
+                    chunk = lines[start:end]
+                    venture_lines.extend(chunk)
+                    venture_lines.append("---")
+                    i = end  # skip ahead to avoid duplication
+                else:
+                    i += 1
+
             if venture_lines:
                 relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
 
-    return "\n\n".join(relevant)[:3000]
+    return "\n\n".join(relevant)[:6000]
 
 def load_common_docs():
     """Wrapper to load common docs using cache."""
@@ -745,32 +779,33 @@ with tab_overview:
             completed = [0]
 
             def score_one(v):
-                # Load venture-specific files
                 vfiles       = load_v_files(v["name"])
                 fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                 tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
                 journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
 
-                # Also check common docs for growth journey reports mentioning this venture
-                if not journey_text:
-                    journey_text = extract_venture_from_common(
-                        v["name"], common_text,
-                        file_keyword="growth journey") if common_text else ""
+                # Read ALL other files in venture folder
+                other_texts = []
+                for key, fpath in vfiles.items():
+                    if key.startswith("other_"):
+                        t = get_text(fpath)
+                        if t: other_texts.append(t[:1000])
+                all_venture_text = " ".join(filter(None, [fb_text, tr_text, journey_text] + other_texts))
 
-                # Get attendance for this venture
+                # Growth journey from common docs if not in folder
+                if not journey_text:
+                    journey_text = extract_venture_from_common(v["name"], common_text, file_keyword="growth journey")
+
                 att          = get_attendance_for_venture(v["name"], attendance_data)
                 att_sessions = att["sessions"]     if att else 0
                 att_dates    = att["dates"]        if att else []
                 att_weeks    = att["weeks_active"] if att else 0
 
-                # Extract venture-specific section from common documents
-                venture_common = extract_venture_from_common(v["name"], common_text) if common_text else ""
+                venture_common = extract_venture_from_common(v["name"], common_text)
 
-                # Only skip if absolutely no data from ANY source
                 has_data = any([
                     v["notes"] and v["notes"] not in ["—","Pending",""],
-                    fb_text, tr_text, venture_common,
-                    att_sessions > 0, journey_text
+                    all_venture_text, venture_common, att_sessions > 0
                 ])
 
                 if not has_data:
@@ -780,7 +815,7 @@ with tab_overview:
                     v["name"], v["notes"], fb_text, tr_text,
                     common_text, v["pct_raw"],
                     att_sessions, att_dates, att_weeks,
-                    v["sprint"], journey_text, api_key)
+                    v["sprint"], journey_text + " " + " ".join(other_texts), api_key)
                 return v["name"], m, i, mr, ir, ms, is_
 
             results = {}
@@ -1012,14 +1047,56 @@ with tab_ventures:
             if pct_num <= 1: pct_num *= 100
         except: pct_num = 0
 
-        vfiles       = load_v_files(vname)
-        fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-        tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-        sp_text      = get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
-        journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
-        signals      = detect_signals((notes or "")+" "+(fb_text or "")+" "+(tr_text or ""))
+        vfiles = load_v_files(vname)
 
         with st.expander(f"**{vname}**  ·  {hub}  ·  {bucket}"):
+
+            # ── load documents only when card is opened ──
+            fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+            tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+            sp_text      = get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
+            journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
+
+            # Read ALL other files in venture folder
+            other_texts = []
+            for key, fpath in vfiles.items():
+                if key.startswith("other_"):
+                    t = get_text(fpath)
+                    if t: other_texts.append(t)
+
+            # Load Common Documents and extract venture-specific sections
+            # Cached per venture — instant on re-open, only loads once per session
+            venture_cache_key = f"vdocs_{vname}"
+            if venture_cache_key not in st.session_state:
+                with st.spinner(f"📂 Loading documents for {vname}..."):
+                    common_text_v  = load_common_docs()
+                    venture_common = extract_venture_from_common(vname, common_text_v)
+                    st.session_state[venture_cache_key] = venture_common
+            else:
+                venture_common = st.session_state[venture_cache_key]
+
+            # Combine ALL sources for signal detection
+            all_text = " ".join(filter(None,
+                [notes, fb_text, tr_text, sp_text, journey_text,
+                 venture_common] + other_texts))
+            signals = detect_signals(all_text)
+
+            # ── prominent signal summary at top ──────
+            if signals:
+                sig_html = " ".join(
+                    f'<span style="background:#dcfce7;color:#166534;padding:3px 10px;'
+                    f'border-radius:20px;font-size:0.8rem;font-weight:600;margin:2px;'
+                    f'display:inline-block">✦ {s["type"]}</span>'
+                    for s in signals
+                )
+                st.markdown(
+                    f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;'
+                    f'padding:10px 14px;margin-bottom:12px">'
+                    f'<span style="font-size:0.78rem;font-weight:700;color:#166534;'
+                    f'text-transform:uppercase;letter-spacing:.05em">✦ Success Signals Detected</span>'
+                    f'<div style="margin-top:6px">{sig_html}</div></div>',
+                    unsafe_allow_html=True
+                )
 
             # ── sub-tabs ─────────────────────────────
             tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Basic Details", "🎙 Sessions", "✦ Success Signals", "🤖 AI Insights", "🔍 Data Sources"])
@@ -1075,15 +1152,99 @@ with tab_ventures:
 
             # TAB 3: Success Signals
             with tab3:
-                if signals:
-                    for s in signals:
-                        st.success(f"✦ **{s['type']}** — keyword: `{s['keyword']}`")
-                else:
-                    st.info("No success signals detected from available text.")
+                st.markdown("#### All Signals Detected")
+                st.caption("Scanned: Notes · Feedback · Transcript · Sprint Plan · Growth Journey · Common Documents")
+                st.divider()
 
-                # Common docs signals
-                if use_sp and sp_reader:
-                    st.caption("Note: Common Documents signals will appear here when AI mode is enabled.")
+                # Keyword signals with source attribution
+                source_map = {
+                    "Notes":          notes or "",
+                    "Feedback":       fb_text,
+                    "Transcript":     tr_text,
+                    "Sprint Plan":    sp_text,
+                    "Growth Journey": journey_text,
+                    "Common Docs":    venture_common,
+                }
+
+                found_any = False
+                for sig_type, kws in SIGNAL_KEYWORDS.items():
+                    sources_hit = []
+                    evidence    = []
+                    for src_name, src_text in source_map.items():
+                        if not src_text: continue
+                        for kw in kws:
+                            if kw in src_text.lower():
+                                # Extract surrounding sentence as evidence
+                                idx = src_text.lower().find(kw)
+                                start = max(0, idx-80)
+                                end   = min(len(src_text), idx+120)
+                                snippet = src_text[start:end].replace("\n"," ").strip()
+                                sources_hit.append(src_name)
+                                evidence.append(f"*...{snippet}...*")
+                                break
+
+                    if sources_hit:
+                        found_any = True
+                        st.markdown(f"**✦ {sig_type}**")
+                        st.caption(f"Found in: {' · '.join(set(sources_hit))}")
+                        for ev in evidence[:2]:
+                            st.markdown(f"> {ev}")
+                        st.markdown("")
+
+                # AI-powered signal extraction
+                if client:
+                    st.divider()
+                    st.markdown("**🤖 AI Signal Extraction**")
+                    st.caption("Claude reads all sources and finds signals that keyword search may miss")
+                    if st.button("Extract AI Signals", key=f"sig_ai_{vname}"):
+                        with st.spinner("Extracting signals from all sources..."):
+                            try:
+                                combined_for_signals = f"""
+Venture: {vname} | Sprint: {sprint}
+Notes: {notes[:400]}
+Feedback: {fb_text[:400]}
+Transcript: {tr_text[:400]}
+Growth Journey: {journey_text[:400]}
+Common Documents: {venture_common[:400]}
+"""
+                                resp = client.messages.create(
+                                    model="claude-sonnet-4-5", max_tokens=800,
+                                    messages=[{"role":"user","content":
+                                        f"""Extract ALL success signals from this venture data. 
+A success signal = concrete evidence the founder spent money, hired someone, invested in resources, won business, or took a committed action for growth.
+
+Be thorough — find EVERY signal including subtle ones.
+
+For each signal found, provide:
+- Signal type (Hired / Investment / New Market / Self-Funded / Revenue / Other)
+- Exact evidence quote from the text
+- Source it came from
+
+Text:
+{combined_for_signals}
+
+Format each signal as:
+SIGNAL: [type] | EVIDENCE: [exact quote] | SOURCE: [where found]
+
+If no signals found, say "No signals detected"."""}])
+                                ai_signals = resp.content[0].text.strip()
+                                for line in ai_signals.splitlines():
+                                    line = line.strip()
+                                    if line.startswith("SIGNAL:"):
+                                        parts = line.split("|")
+                                        sig   = parts[0].replace("SIGNAL:","").strip()
+                                        ev    = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                                        src   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                                        st.success(f"✦ **{sig}**")
+                                        if ev: st.markdown(f"> *{ev}*")
+                                        if src: st.caption(f"Source: {src}")
+                                    elif line and not line.startswith("No signals"):
+                                        st.write(line)
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+
+                if not found_any:
+                    st.info("No keyword signals detected. Use AI Signal Extraction above for deeper analysis.")
 
             # TAB 4: AI Insights
             with tab4:
@@ -1149,21 +1310,23 @@ INVESTMENT RAG: Green/Amber/Red — one sentence reason."""}])
                 # Source 2: Venture folder files
                 st.markdown("**📁 Source 2: Venture Folder Files**")
                 if vfiles:
+                    known = ["feedback","transcript","sprint","journey"]
                     for ftype, fpath in vfiles.items():
                         st.caption(f"Found: `{ftype}` → `{Path(str(fpath)).name}`")
-                    if fb_text:
-                        with st.expander("📋 Feedback file content"):
-                            st.text(fb_text[:2000])
-                            if "$68" in fb_text or "68,000" in fb_text:
-                                st.success("✅ $68K export order mentioned here")
-                    if tr_text:
-                        with st.expander("🎙 Transcript file content"):
-                            st.text(tr_text[:2000])
-                            if "$68" in tr_text or "68,000" in tr_text:
-                                st.success("✅ $68K export order mentioned here")
-                    if sp_text:
-                        with st.expander("📌 Sprint Plan file content"):
-                            st.text(sp_text[:2000])
+                    # Show content for all files
+                    for ftype, fpath in vfiles.items():
+                        fname_display = Path(str(fpath)).name
+                        file_content  = get_text(fpath) if ftype not in ["feedback","transcript","sprint","journey"] else (
+                            fb_text if ftype=="feedback" else
+                            tr_text if ftype=="transcript" else
+                            sp_text if ftype=="sprint" else
+                            journey_text
+                        )
+                        if file_content:
+                            with st.expander(f"📄 {fname_display}"):
+                                st.text(file_content[:2000])
+                                if "$68" in file_content or "68,000" in file_content:
+                                    st.success("✅ $68K export order mentioned here")
                 else:
                     st.warning("No files found in venture folder on SharePoint")
 
