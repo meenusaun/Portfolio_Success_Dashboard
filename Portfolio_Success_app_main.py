@@ -704,13 +704,34 @@ def rag_badge(rag):
     emoji = RAG_EMOJI.get(rag, "⚪")
     return f'<span class="{css}">{emoji} {rag}</span>'
 
-# ── top navigation tabs ──────────────────────────────
-tab_process, tab_overview, tab_ventures = st.tabs(["⚙️  Process Batches", "📊  Portfolio Overview", "🏢  Venture Cards"])
+# ── check if batches are processed ───────────────────
+BATCH_RESULTS_KEY = "batch_results"
+batch_results     = st.session_state.get(BATCH_RESULTS_KEY, {})
+done_count        = sum(1 for v in batch_results.values() if v.get("status") == "done")
+all_processed     = done_count > 0 and st.session_state.get("synced_to_dashboard", False)
+
+# ── top navigation tabs ───────────────────────────────
+if all_processed:
+    tab_process, tab_overview, tab_ventures = st.tabs([
+        "⚙️  Process Batches",
+        "📊  Portfolio Overview",
+        "🏢  Venture Cards"
+    ])
+else:
+    # Only show Process Batches until synced
+    tab_process = st.container()
+    tab_overview  = None
+    tab_ventures  = None
+    if done_count == 0:
+        st.info("👆 Complete **⚙️ Process Batches** first to unlock Portfolio Overview and Venture Cards.")
+    else:
+        st.info(f"✅ {done_count} ventures processed — click **🔄 Sync Results to Dashboard** to unlock all views.")
 
 # ══════════════════════════════════════════════════════
 #  VIEW 1: PORTFOLIO OVERVIEW
 # ══════════════════════════════════════════════════════
-with tab_overview:
+if tab_overview is not None:
+  with tab_overview:
     st.title("📊 Portfolio Overview")
     st.caption("NEN Accelerate · All ventures at a glance — RAG scores powered by AI")
     st.divider()
@@ -982,7 +1003,8 @@ with tab_overview:
 # ══════════════════════════════════════════════════════
 #  VIEW 2: VENTURE CARDS
 # ══════════════════════════════════════════════════════
-with tab_ventures:
+if tab_ventures is not None:
+  with tab_ventures:
     st.title("🏢 Venture Cards")
     st.caption("Individual venture deep-dive")
     st.divider()
@@ -1362,14 +1384,9 @@ with tab_process:
 
     from processor import process_venture
 
-    BATCH_RESULTS_KEY = "batch_results"
-    BATCH_SIZE        = 10
-
-    # ── status overview ───────────────────────────────
-    batch_results = st.session_state.get(BATCH_RESULTS_KEY, {})
-    done_count    = sum(1 for v in batch_results.values() if v.get("status") == "done")
-    error_count   = sum(1 for v in batch_results.values() if v.get("status") == "error")
-    total         = len(ventures_raw)
+    BATCH_SIZE = 10
+    error_count = sum(1 for v in batch_results.values() if v.get("status") == "error")
+    total       = len(ventures_raw)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Ventures",  total)
@@ -1511,6 +1528,7 @@ with tab_process:
                     "investment_score": rag.get("investment_score",0),
                 })
             st.session_state["rag_scores_ai"] = rag_cache
+            st.session_state["synced_to_dashboard"] = True
 
             # Also cache signals per venture
             for vname_b, vr in batch_results.items():
