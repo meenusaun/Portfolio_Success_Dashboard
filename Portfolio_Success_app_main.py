@@ -351,7 +351,7 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
             if not text or len(text) < 50: return
             # Store full content up to 25000 chars per file
             # Enough for ~15-20 pages — truncation per venture at extraction time
-            texts.append(f"=== FILE: {fname} ===\n{text[:25000]}")
+            texts.append(f"=== FILE: {fname} ===\n{text}")
         except: pass
 
     if use_sp and ENV_CLIENT_ID:
@@ -438,7 +438,7 @@ def extract_venture_from_common(venture_name, common_text, file_keyword=None):
             if venture_lines:
                 relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
 
-    return "\n\n".join(relevant)[:6000]
+    return "\n\n".join(relevant)
 
 def load_common_docs():
     """Wrapper to load common docs using cache."""
@@ -597,11 +597,11 @@ Venture: {vname}
 Sprint Type: {sprint_type or 'Unknown'}
 Sprint Completion: {pct:.0f}%
 Attendance (last 2 months): {att_summary}
-Program Notes/Remarks: {notes[:600]}
-Session Feedback: {fb_text[:400]}
-Transcript: {tr_text[:400]}
-Growth Journey Report: {growth_journey_text[:600]}
-Common Documents (venture-specific excerpts): {venture_common[:500]}
+Program Notes/Remarks: {notes[:3000]}
+Session Feedback: {fb_text[:3000]}
+Transcript: {tr_text[:3000]}
+Growth Journey Report: {growth_journey_text[:3000]}
+Common Documents (venture-specific excerpts): {venture_common[:5000]}
 """
     prompt = f"""You are scoring a venture in an accelerator program. Analyze the data and return ONLY a JSON object with 6 keys.
 
@@ -761,61 +761,40 @@ with tab_overview:
                 "investment_score": 0,
             })
 
-        # Step 2: Load common documents + attendance once
-        with st.spinner("📂 Loading Common Documents and Attendance data..."):
-            common_text    = load_common_docs()
-            sp_id          = id(sp_reader) if sp_reader else 0
-            attendance_data= load_attendance_data(sp_id, use_sp, root_path)
-
-        att_count = len(attendance_data)
-        col_info.caption(f"📂 Common Documents loaded · 📋 Attendance records: {att_count} ventures")
+        # Step 2: Load attendance only (no file reading for portfolio)
+        with st.spinner("📋 Loading attendance data..."):
+            sp_id           = id(sp_reader) if sp_reader else 0
+            attendance_data = load_attendance_data(sp_id, use_sp, root_path)
+        col_info.caption(f"📋 Attendance records: {len(attendance_data)} ventures")
 
         # Step 3: AI scoring in parallel — ALL ventures scored
         # Common Documents is primary source, Notes + files are supplementary
         if client:
             import concurrent.futures
 
-            prog = st.progress(0, text=f"🤖 AI scoring all {len(venture_data)} ventures using Common Documents + Notes + Files...")
+            prog = st.progress(0, text=f"🤖 AI scoring {len(venture_data)} ventures using Notes + Attendance...")
             completed = [0]
 
             def score_one(v):
-                vfiles       = load_v_files(v["name"])
-                fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-                tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-                journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
-
-                # Read ALL other files in venture folder
-                other_texts = []
-                for key, fpath in vfiles.items():
-                    if key.startswith("other_"):
-                        t = get_text(fpath)
-                        if t: other_texts.append(t[:1000])
-                all_venture_text = " ".join(filter(None, [fb_text, tr_text, journey_text] + other_texts))
-
-                # Growth journey from common docs if not in folder
-                if not journey_text:
-                    journey_text = extract_venture_from_common(v["name"], common_text, file_keyword="growth journey")
-
+                # PORTFOLIO SCORING: Only uses Excel data + attendance
+                # No file reading — keeps portfolio load fast
                 att          = get_attendance_for_venture(v["name"], attendance_data)
                 att_sessions = att["sessions"]     if att else 0
                 att_dates    = att["dates"]        if att else []
                 att_weeks    = att["weeks_active"] if att else 0
 
-                venture_common = extract_venture_from_common(v["name"], common_text)
-
                 has_data = any([
                     v["notes"] and v["notes"] not in ["—","Pending",""],
-                    all_venture_text, venture_common, att_sessions > 0
+                    att_sessions > 0
                 ])
 
                 if not has_data:
-                    return v["name"], "ZERO", "ZERO", "No data found in any source", "No data found in any source"
+                    return v["name"], "ZERO", "ZERO", "No data in Notes or Attendance", "No data in Notes or Attendance", 0, 0
 
                 m, i, mr, ir, ms, is_ = compute_rag_ai(
-                    v["name"], v["notes"], fb_text, tr_text,
-                    common_text, v["pct_raw"],
+                    v["name"], v["notes"], "", "", "", v["pct_raw"],
                     att_sessions, att_dates, att_weeks,
-                    v["sprint"], journey_text + " " + " ".join(other_texts), api_key)
+                    v["sprint"], "", api_key)
                 return v["name"], m, i, mr, ir, ms, is_
 
             results = {}
@@ -1049,7 +1028,13 @@ with tab_ventures:
 
         vfiles = load_v_files(vname)
 
-        with st.expander(f"**{vname}**  ·  {hub}  ·  {bucket}"):
+        # Get cached RAG for title display
+        cached     = st.session_state.get("rag_scores_ai") or []
+        v_score    = next((s for s in cached if s["name"] == vname), None)
+        rag_label  = v_score["overall_rag"] if v_score else "—"
+        rag_emoji  = RAG_EMOJI.get(rag_label, "⚪")
+
+        with st.expander(f"{rag_emoji} **{vname}**  ·  {hub}  ·  {bucket}  ·  RAG: {rag_label}"):
 
             # ── load documents only when card is opened ──
             fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
@@ -1057,15 +1042,14 @@ with tab_ventures:
             sp_text      = get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
             journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
 
-            # Read ALL other files in venture folder
+            # Read ALL other files in venture folder — no character limit
             other_texts = []
             for key, fpath in vfiles.items():
                 if key.startswith("other_"):
                     t = get_text(fpath)
                     if t: other_texts.append(t)
 
-            # Load Common Documents and extract venture-specific sections
-            # Cached per venture — instant on re-open, only loads once per session
+            # Load Common Documents venture-specific sections — cached per venture
             venture_cache_key = f"vdocs_{vname}"
             if venture_cache_key not in st.session_state:
                 with st.spinner(f"📂 Loading documents for {vname}..."):
@@ -1075,28 +1059,10 @@ with tab_ventures:
             else:
                 venture_common = st.session_state[venture_cache_key]
 
-            # Combine ALL sources for signal detection
+            # Basic keyword signals for summary only
             all_text = " ".join(filter(None,
-                [notes, fb_text, tr_text, sp_text, journey_text,
-                 venture_common] + other_texts))
+                [notes, fb_text, tr_text, sp_text, journey_text, venture_common] + other_texts))
             signals = detect_signals(all_text)
-
-            # ── prominent signal summary at top ──────
-            if signals:
-                sig_html = " ".join(
-                    f'<span style="background:#dcfce7;color:#166534;padding:3px 10px;'
-                    f'border-radius:20px;font-size:0.8rem;font-weight:600;margin:2px;'
-                    f'display:inline-block">✦ {s["type"]}</span>'
-                    for s in signals
-                )
-                st.markdown(
-                    f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;'
-                    f'padding:10px 14px;margin-bottom:12px">'
-                    f'<span style="font-size:0.78rem;font-weight:700;color:#166534;'
-                    f'text-transform:uppercase;letter-spacing:.05em">✦ Success Signals Detected</span>'
-                    f'<div style="margin-top:6px">{sig_html}</div></div>',
-                    unsafe_allow_html=True
-                )
 
             # ── sub-tabs ─────────────────────────────
             tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Basic Details", "🎙 Sessions", "✦ Success Signals", "🤖 AI Insights", "🔍 Data Sources"])
@@ -1132,7 +1098,7 @@ with tab_ventures:
 
                 if notes:
                     st.markdown("**📝 Remarks:**")
-                    st.info(notes[:800])
+                    st.info(notes[:3000])
 
             # TAB 2: Sessions
             with tab2:
@@ -1152,153 +1118,113 @@ with tab_ventures:
 
             # TAB 3: Success Signals
             with tab3:
-                st.caption("Scanned: Notes · Feedback · Transcript · Sprint Plan · Growth Journey · Common Documents · All Venture Folder Files")
+                st.caption("Sources: Notes · Feedback · Transcript · Sprint Plan · Growth Journey · Common Documents · All Venture Files")
 
-                source_map = {
-                    "Notes":          notes or "",
-                    "Feedback":       fb_text,
-                    "Transcript":     tr_text,
-                    "Sprint Plan":    sp_text,
-                    "Growth Journey": journey_text,
-                    "Common Docs":    venture_common,
-                }
-                # Add other venture folder files
-                for idx_o, ot in enumerate(other_texts):
-                    source_map[f"Venture File {idx_o+1}"] = ot
+                sig_cache_key = f"signals_{vname}"
+                col_btn, col_clear = st.columns([2,1])
+                get_pressed   = col_btn.button("🔍 Get All Signals", key=f"get_sig_{vname}",
+                                               help="Reads ALL documents fully — no character limits")
+                clear_pressed = col_clear.button("🗑 Clear", key=f"clr_sig_{vname}")
 
-                # Define which signal types map to which score
-                MOMENTUM_SIGNALS = {
-                    "Session Attendance":    ["attended","session","present","participated","meeting","call","workshop"],
-                    "Task Completion":       ["completed","finished","done","achieved","delivered","submitted","task"],
-                    "Founder Engagement":    ["engaged","active","proactive","enthusiastic","committed","involved","responsive"],
-                    "Export Order / Deal":   ["order","contract","deal","client","buyer","purchase order","po","export order"],
-                    "Progress / Milestone":  ["progress","milestone","launched","started","initiated","pilot","trial run"],
-                    "Positive Feedback":     ["satisfied","happy","positive","pleased","good feedback","excellent","appreciated"],
-                }
-                INVESTMENT_SIGNALS = {
-                    "Hired Staff":           ["hired","new hire","appointed","joined","onboard","recruit","dedicated","new employee","new manager","export manager"],
-                    "Capital Investment":    ["invested","purchased","bought","commissioned","capex","new machine","new facility","plant","refurbish","spent","fund","crore","lakh","₹","$"],
-                    "New Market / Stream":   ["new market","new segment","new product","new geography","private label","supermarket","new category","export market","international"],
-                    "Self-Funded Sprint":    ["own money","paid for","self-funded","sprint 2","sprint 3","another sprint","self invest","self-invest"],
-                    "Revenue / Order Win":   ["revenue","order","contract","deal","new client","purchase order","po received","first export","export order"],
-                    "Tools / Subscription":  ["subscribed","subscription","database","crm","software","platform","tool","system"],
-                }
+                if clear_pressed:
+                    st.session_state.pop(sig_cache_key, None)
+                    st.rerun()
 
-                def find_signals_in_sources(signal_dict, source_map):
-                    results = {}
-                    for sig_name, keywords in signal_dict.items():
-                        hits = []
-                        for src_name, src_text in source_map.items():
-                            if not src_text: continue
-                            for kw in keywords:
-                                if kw in src_text.lower():
-                                    idx   = src_text.lower().find(kw)
-                                    start = max(0, idx-100)
-                                    end   = min(len(src_text), idx+150)
-                                    snippet = src_text[start:end].replace("\n"," ").strip()
-                                    hits.append({"source": src_name, "keyword": kw, "evidence": snippet})
-                                    break  # one hit per source per signal type
-                        if hits:
-                            results[sig_name] = hits
-                    return results
+                if get_pressed:
+                    st.session_state.pop(sig_cache_key, None)
+                    with st.spinner(f"🤖 Reading all documents for {vname}..."):
+                        try:
+                            full_sources = {
+                                "Notes":          notes or "",
+                                "Feedback":       fb_text,
+                                "Transcript":     tr_text,
+                                "Sprint Plan":    sp_text,
+                                "Growth Journey": journey_text,
+                                "Common Docs":    venture_common,
+                            }
+                            for idx_o, ot in enumerate(other_texts):
+                                full_sources[f"Venture File {idx_o+1}"] = ot
 
-                # ── Sprint Momentum Signals ───────────────
-                st.markdown("### 📈 Sprint Momentum Signals")
-                m_results = find_signals_in_sources(MOMENTUM_SIGNALS, source_map)
-                if m_results:
-                    for sig_name, hits in m_results.items():
-                        src_list = " · ".join(set(h["source"] for h in hits))
-                        st.markdown(f"**✦ {sig_name}**  <small style='color:#6b7280'>({src_list})</small>", unsafe_allow_html=True)
-                        for h in hits[:3]:
-                            st.markdown(f"> *...{h['evidence']}...*")
-                        st.markdown("")
-                else:
-                    st.info("No momentum signals detected from keyword search. Use AI extraction below.")
+                            full_combined = "\n\n".join(
+                                f"=== {src} ===\n{txt}"
+                                for src, txt in full_sources.items() if txt
+                            )
 
-                st.divider()
-
-                # ── Self Investment Signals ───────────────
-                st.markdown("### 💰 Self Investment Signals")
-                i_results = find_signals_in_sources(INVESTMENT_SIGNALS, source_map)
-                if i_results:
-                    for sig_name, hits in i_results.items():
-                        src_list = " · ".join(set(h["source"] for h in hits))
-                        st.markdown(f"**✦ {sig_name}**  <small style='color:#6b7280'>({src_list})</small>", unsafe_allow_html=True)
-                        for h in hits[:3]:
-                            st.markdown(f"> *...{h['evidence']}...*")
-                        st.markdown("")
-                else:
-                    st.info("No investment signals detected from keyword search. Use AI extraction below.")
-
-                st.divider()
-
-                # ── AI Signal Extraction ──────────────────
-                st.markdown("### 🤖 AI Signal Extraction")
-                st.caption("Claude reads all sources and finds signals keyword search may miss")
-                if client:
-                    if st.button("Extract All Signals with AI", key=f"sig_ai_{vname}"):
-                        with st.spinner("Extracting signals from all sources..."):
-                            try:
-                                combined_for_signals = "\n".join(filter(None, [
-                                    f"Notes: {notes[:500]}",
-                                    f"Feedback: {fb_text[:500]}",
-                                    f"Transcript: {tr_text[:500]}",
-                                    f"Growth Journey: {journey_text[:500]}",
-                                    f"Common Docs: {venture_common[:800]}",
-                                ] + [f"Other Doc: {t[:400]}" for t in other_texts[:3]]))
-
+                            if client:
                                 resp = client.messages.create(
-                                    model="claude-sonnet-4-5", max_tokens=1000,
+                                    model="claude-sonnet-4-5", max_tokens=2000,
                                     messages=[{"role":"user","content":
-                                        f"""Venture: {vname} | Sprint: {sprint}
+                                        f"""Venture: {vname} | Sprint Type: {sprint}
 
-Extract ALL signals from two categories:
+Extract ALL signals into TWO categories:
 
-SPRINT MOMENTUM SIGNALS (evidence of founder engagement, progress, task completion, orders won, milestones):
-SELF INVESTMENT SIGNALS (evidence of money spent, staff hired, tools bought, new markets entered, self-funded activities):
+SPRINT MOMENTUM SIGNALS: founder engagement, session attendance, task completion, export orders, milestones, positive feedback, progress.
+SELF INVESTMENT SIGNALS: money spent, staff hired, tools/subscriptions, new markets, capital invested, self-funded activities specific to sprint type '{sprint}'.
 
-For each signal:
-MOMENTUM: [signal description] | EVIDENCE: [exact quote] | SOURCE: [where found]
-INVESTMENT: [signal description] | EVIDENCE: [exact quote] | SOURCE: [where found]
+Use EXACTLY this format per signal:
+MOMENTUM: [type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
+INVESTMENT: [type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
 
-Be thorough. Include subtle signals. If none found in a category say "None detected".
+Be THOROUGH. Find every signal. No character limits.
+If none in a category: MOMENTUM: None found
 
-Text:
-{combined_for_signals}"""}])
+--- ALL DOCUMENTS ---
+{full_combined[:150000]}"""}])
 
-                                ai_text = resp.content[0].text.strip()
-                                m_lines = [l for l in ai_text.splitlines() if l.strip().startswith("MOMENTUM:")]
-                                i_lines = [l for l in ai_text.splitlines() if l.strip().startswith("INVESTMENT:")]
+                                result = {{"momentum": [], "investment": []}}
+                                for line in resp.content[0].text.splitlines():
+                                    line = line.strip()
+                                    if line.startswith("MOMENTUM:") and "None" not in line:
+                                        parts = [p.strip() for p in line.split("|")]
+                                        result["momentum"].append({{
+                                            "type":     parts[0].replace("MOMENTUM:","").strip(),
+                                            "evidence": parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else "",
+                                            "source":   parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else "",
+                                        }})
+                                    elif line.startswith("INVESTMENT:") and "None" not in line:
+                                        parts = [p.strip() for p in line.split("|")]
+                                        result["investment"].append({{
+                                            "type":     parts[0].replace("INVESTMENT:","").strip(),
+                                            "evidence": parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else "",
+                                            "source":   parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else "",
+                                        }})
+                                st.session_state[sig_cache_key] = result
+                            else:
+                                st.warning("No API key — add ANTHROPIC_API_KEY to enable signal extraction.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
-                                if m_lines:
-                                    st.markdown("**📈 AI Momentum Signals:**")
-                                    for line in m_lines:
-                                        parts = line.split("|")
-                                        desc  = parts[0].replace("MOMENTUM:","").strip()
-                                        ev    = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                                        src   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
-                                        st.success(f"✦ {desc}")
-                                        if ev: st.markdown(f"> *{ev}*")
-                                        if src: st.caption(f"Source: {src}")
+                if sig_cache_key in st.session_state:
+                    cached_sigs = st.session_state[sig_cache_key]
+                    st.divider()
 
-                                if i_lines:
-                                    st.markdown("**💰 AI Investment Signals:**")
-                                    for line in i_lines:
-                                        parts = line.split("|")
-                                        desc  = parts[0].replace("INVESTMENT:","").strip()
-                                        ev    = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                                        src   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
-                                        st.success(f"✦ {desc}")
-                                        if ev: st.markdown(f"> *{ev}*")
-                                        if src: st.caption(f"Source: {src}")
+                    st.markdown("### 📈 Sprint Momentum Signals")
+                    m_sigs = cached_sigs.get("momentum", [])
+                    if m_sigs:
+                        for s in m_sigs:
+                            st.markdown(f"**✦ {s['type']}**  <small style='color:#6b7280'>({s.get('source','')})</small>",
+                                        unsafe_allow_html=True)
+                            if s.get("evidence"):
+                                st.markdown(f"> *{s['evidence']}*")
+                            st.markdown("")
+                    else:
+                        st.info("No momentum signals found.")
 
-                                if not m_lines and not i_lines:
-                                    st.write(ai_text)
+                    st.divider()
 
-                            except Exception as e:
-                                st.error(f"Error: {e}")
+                    st.markdown("### 💰 Self Investment Signals")
+                    i_sigs = cached_sigs.get("investment", [])
+                    if i_sigs:
+                        for s in i_sigs:
+                            st.markdown(f"**✦ {s['type']}**  <small style='color:#6b7280'>({s.get('source','')})</small>",
+                                        unsafe_allow_html=True)
+                            if s.get("evidence"):
+                                st.markdown(f"> *{s['evidence']}*")
+                            st.markdown("")
+                    else:
+                        st.info("No investment signals found.")
                 else:
-                    st.caption("Add Anthropic API key to enable AI extraction")
+                    st.info("👆 Click 'Get All Signals' to extract signals from all documents.")
 
             # TAB 4: AI Insights
             with tab4:
@@ -1313,9 +1239,9 @@ Text:
                                     messages=[{"role":"user","content":
                                         f"""Venture: {vname}
 Hub: {hub} | Sprint: {sprint} | Completion: {pct_num:.0f}%
-Notes: {notes[:600]}
-Feedback: {fb_text[:400]}
-Transcript: {tr_text[:400]}
+Notes: {notes[:3000]}
+Feedback: {fb_text[:3000]}
+Transcript: {tr_text[:3000]}
 
 Provide a concise analysis in plain text (no markdown headers, no # symbols).
 Use these section labels followed by a colon:
