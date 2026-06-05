@@ -313,57 +313,74 @@ def get_text(fpath):
 def load_common_docs_cached(_sp_id, use_sp, root_path):
     """Load all Common Documents and return full combined text."""
     texts = []
+
+    def process_file(fname, content_bytes=None, fpath=None):
+        ext = Path(fname).suffix.lower()
+        if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
+        try:
+            if content_bytes:
+                text = extract_text_bytes(content_bytes, fname)
+            else:
+                text = extract_text_local(fpath)
+            if not text or len(text) < 50: return
+
+            # Give more content to the portfolio dashboard — it has all ventures
+            is_dashboard = "journey_accelerate_portfolio" in fname.lower() or \
+                           "portfolio dashboard" in fname.lower()
+            limit = 15000 if is_dashboard else 3000
+            texts.append(f"=== FILE: {fname} ===\n{text[:limit]}")
+        except: pass
+
     if use_sp and ENV_CLIENT_ID:
         try:
             from sharepoint_reader import SharePointReader
             sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
             items = sp.list_files(COMMON_FOLDER)
             for fname in items:
-                ext = Path(fname).suffix.lower()
-                if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: continue
                 fp = f"{COMMON_FOLDER}/{fname}"
                 try:
                     content = sp.download_file(fp)
-                    text = extract_text_bytes(content, fname)
-                    if text and len(text) > 50:
-                        texts.append(f"=== FILE: {fname} ===\n{text[:3000]}")
+                    process_file(fname, content_bytes=content)
                 except: pass
         except: pass
     elif root_path:
         cpath = os.path.join(root_path, "Common Documents")
         if os.path.isdir(cpath):
             for f in os.listdir(cpath):
-                ext = Path(f).suffix.lower()
-                if ext not in [".xlsx",".xls",".docx",".pdf",".pptx"]: continue
-                fp = os.path.join(cpath, f)
-                if os.path.isfile(fp):
-                    text = extract_text_local(fp)
-                    if text: texts.append(f"=== FILE: {f} ===\n{text[:3000]}")
+                process_file(f, fpath=os.path.join(cpath, f))
+
     return "\n\n".join(texts)
 
 def extract_venture_from_common(venture_name, common_text, file_keyword=None):
-    """Extract only sections mentioning this venture from common docs.
-    Optionally filter to files whose name contains file_keyword."""
+    """Extract only sections mentioning this venture from common docs."""
     if not common_text or not venture_name: return ""
     relevant = []
     sections = common_text.split("=== FILE:")
     for section in sections:
         if not section.strip(): continue
-        # Apply file keyword filter if specified
         fname_part = section.split("===")[0].strip() if "===" in section else ""
         if file_keyword and file_keyword.lower() not in fname_part.lower():
             continue
-        if venture_name.lower() in section.lower():
-            lines = section.split("\n")
-            venture_lines = []
-            for i, line in enumerate(lines):
-                if venture_name.lower() in line.lower():
-                    start = max(0, i-2)
-                    end   = min(len(lines), i+5)
-                    venture_lines.extend(lines[start:end])
-            if venture_lines:
-                relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
-    return "\n\n".join(relevant)[:2000]
+        if venture_name.lower() not in section.lower():
+            continue
+
+        lines = section.split("\n")
+        venture_lines = []
+        is_dashboard = "journey_accelerate_portfolio" in fname_part.lower() or \
+                       "portfolio dashboard" in fname_part.lower()
+
+        for i, line in enumerate(lines):
+            if venture_name.lower() in line.lower():
+                # Dashboard file: grab the full row (wider context)
+                context = 3 if is_dashboard else 2
+                start = max(0, i - context)
+                end   = min(len(lines), i + 8 if is_dashboard else i + 5)
+                venture_lines.extend(lines[start:end])
+
+        if venture_lines:
+            relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
+
+    return "\n\n".join(relevant)[:3000]
 
 def load_common_docs():
     """Wrapper to load common docs using cache."""
