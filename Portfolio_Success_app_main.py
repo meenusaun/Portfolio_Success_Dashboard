@@ -704,48 +704,39 @@ def rag_badge(rag):
     emoji = RAG_EMOJI.get(rag, "⚪")
     return f'<span class="{css}">{emoji} {rag}</span>'
 
-# ── persistent storage paths ─────────────────────────
-BATCH_RESULTS_KEY  = "batch_results"
-BATCH_RESULTS_FILE = f"{SP_FOLDER}/batch_results.json"
+# ── persistent storage ───────────────────────────────
+BATCH_RESULTS_KEY = "batch_results"
 
-# ── auto-load batch results from SharePoint on first load ──
+def restore_from_saved(saved_data):
+    """Restore session state from saved batch_results.json data."""
+    st.session_state[BATCH_RESULTS_KEY] = saved_data.get("results", {})
+    if saved_data.get("synced"):
+        st.session_state["synced_to_dashboard"] = True
+        rag_cache = []
+        for vn, vr in st.session_state[BATCH_RESULTS_KEY].items():
+            if vr.get("status") == "done":
+                row = get_row(vn)
+                rag = vr.get("rag", {})
+                rag_cache.append({
+                    "name":    vn,
+                    "hub":     cv(row, col_hub),
+                    "vp":      cv(row, col_vp) if col_vp else "—",
+                    "sprint":  cv(row, col_sprint),
+                    "rev":     cv(row, col_rev),
+                    "bucket":  get_stage_bucket(row[col_pct] if (row is not None and col_pct) else None),
+                    "pct_raw": row[col_pct] if (row is not None and col_pct) else None,
+                    "notes":   cv(row, col_notes, default=""),
+                    **{k: rag.get(k,"ZERO") for k in
+                       ["overall_rag","momentum_rag","investment_rag",
+                        "momentum_reason","investment_reason",
+                        "momentum_score","investment_score"]}
+                })
+                if vr.get("signals"):
+                    st.session_state[f"signals_{vn}"] = vr["signals"]
+        st.session_state["rag_scores_ai"] = rag_cache
+
 if BATCH_RESULTS_KEY not in st.session_state:
-    if use_sp and sp_reader:
-        try:
-            if sp_reader.file_exists(BATCH_RESULTS_FILE):
-                with st.spinner("📂 Loading previous batch results..."):
-                    saved = sp_reader.download_json(BATCH_RESULTS_FILE)
-                    st.session_state[BATCH_RESULTS_KEY] = saved.get("results", {})
-                    if saved.get("synced"):
-                        st.session_state["synced_to_dashboard"] = True
-                        # Rebuild RAG cache from saved results
-                        rag_cache = []
-                        for vn, vr in st.session_state[BATCH_RESULTS_KEY].items():
-                            if vr.get("status") == "done":
-                                row = get_row(vn)
-                                rag = vr.get("rag", {})
-                                rag_cache.append({
-                                    "name": vn,
-                                    "hub":    cv(row, col_hub),
-                                    "vp":     cv(row, col_vp) if col_vp else "—",
-                                    "sprint": cv(row, col_sprint),
-                                    "rev":    cv(row, col_rev),
-                                    "bucket": get_stage_bucket(row[col_pct] if (row is not None and col_pct) else None),
-                                    "pct_raw": row[col_pct] if (row is not None and col_pct) else None,
-                                    "notes":  cv(row, col_notes, default=""),
-                                    **{k: rag.get(k, "ZERO") for k in
-                                       ["overall_rag","momentum_rag","investment_rag",
-                                        "momentum_reason","investment_reason",
-                                        "momentum_score","investment_score"]}
-                                })
-                                # Restore signals cache too
-                                if vr.get("signals"):
-                                    st.session_state[f"signals_{vn}"] = vr["signals"]
-                        st.session_state["rag_scores_ai"] = rag_cache
-        except Exception as e:
-            pass  # No previous results — start fresh
-    if BATCH_RESULTS_KEY not in st.session_state:
-        st.session_state[BATCH_RESULTS_KEY] = {}
+    st.session_state[BATCH_RESULTS_KEY] = {}
 
 batch_results = st.session_state.get(BATCH_RESULTS_KEY, {})
 done_count    = sum(1 for v in batch_results.values() if v.get("status") == "done")
@@ -1550,10 +1541,6 @@ with tab_process:
     if clear_all:
         st.session_state.pop(BATCH_RESULTS_KEY, None)
         st.session_state.pop("synced_to_dashboard", None)
-        # Also delete from SharePoint
-        if use_sp and sp_reader:
-            try: sp_reader.upload_json(BATCH_RESULTS_FILE, {"results":{}, "synced":False})
-            except: pass
         st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1624,15 +1611,7 @@ with tab_process:
                         st.session_state[BATCH_RESULTS_KEY] = {}
                     st.session_state[BATCH_RESULTS_KEY][vname_b] = result
 
-                    # Auto-save to SharePoint after each venture
-                    if use_sp and sp_reader:
-                        try:
-                            sp_reader.upload_json(BATCH_RESULTS_FILE, {
-                                "results": st.session_state[BATCH_RESULTS_KEY],
-                                "synced":  st.session_state.get("synced_to_dashboard", False),
-                                "saved_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-                            })
-                        except: pass  # Don't fail if save fails
+                    # (results saved to file on Sync or Download)
 
                 prog_b.progress(1.0, text=f"✅ Batch {batch['num']} complete!")
                 st.rerun()
@@ -1642,19 +1621,8 @@ with tab_process:
         st.divider()
         st.subheader("Step 3 — Sync to Dashboard")
 
-        # Show last processed info
-        last_saved = None
-        if use_sp and sp_reader:
-            try:
-                saved_meta = sp_reader.download_json(BATCH_RESULTS_FILE)
-                last_saved = saved_meta.get("saved_at")
-            except: pass
-
         col_sync_info, col_sync_btn = st.columns([3,1])
-        if last_saved:
-            col_sync_info.caption(f"💾 Last saved to SharePoint: {last_saved}  ·  {done_count} ventures processed")
-        else:
-            col_sync_info.caption(f"{done_count} ventures processed — not yet saved to SharePoint")
+        col_sync_info.caption(f"{done_count} ventures processed and ready to sync")
 
         if col_sync_btn.button("🔄 Sync to Dashboard"):
             from datetime import datetime
@@ -1689,17 +1657,59 @@ with tab_process:
                 if vr.get("status") == "done" and vr.get("signals"):
                     st.session_state[f"signals_{vname_b}"] = vr["signals"]
 
-            # Save synced state to SharePoint
-            if use_sp and sp_reader:
-                try:
-                    sp_reader.upload_json(BATCH_RESULTS_FILE, {
-                        "results":  batch_results,
-                        "synced":   True,
-                        "saved_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-                    })
-                    st.success(f"✅ Synced {len(rag_cache)} ventures · Saved to SharePoint · Go to 📊 Portfolio Overview")
-                except Exception as se:
-                    st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard!")
-                    st.warning(f"SharePoint save failed: {se}")
-            else:
-                st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard!")
+            st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard! Go to 📊 Portfolio Overview")
+
+    # ── Step 4: Save / Load Results ──────────────────
+    st.divider()
+    st.subheader("Step 4 — Save & Restore Results")
+    st.caption("Download results to your PC. Upload next session to restore without re-processing.")
+
+    save_col, load_col = st.columns(2)
+
+    # ── Download ──────────────────────────────────────
+    with save_col:
+        st.markdown("**💾 Save Results**")
+        if done_count > 0:
+            import json
+            from datetime import datetime
+            save_data = {
+                "results":  batch_results,
+                "synced":   st.session_state.get("synced_to_dashboard", False),
+                "saved_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                "version":  "1.0"
+            }
+            save_json = json.dumps(save_data, indent=2, default=str)
+            st.download_button(
+                label     = "⬇️ Download batch_results.json",
+                data      = save_json,
+                file_name = "batch_results.json",
+                mime      = "application/json",
+                help      = "Save this file to your PC. Upload it next session to restore results."
+            )
+            st.caption(f"Contains results for {done_count} ventures")
+        else:
+            st.info("Run batches first to enable download.")
+
+    # ── Upload / Restore ──────────────────────────────
+    with load_col:
+        st.markdown("**📂 Restore Results**")
+        uploaded = st.file_uploader(
+            "Upload batch_results.json",
+            type=["json"],
+            key="batch_upload",
+            help="Upload a previously downloaded batch_results.json to restore results"
+        )
+        if uploaded:
+            try:
+                import json
+                saved_data = json.loads(uploaded.read().decode("utf-8"))
+                if st.button("✅ Restore from file", key="restore_btn"):
+                    restore_from_saved(saved_data)
+                    st.success(f"✅ Restored {len(st.session_state[BATCH_RESULTS_KEY])} venture results!")
+                    st.rerun()
+                else:
+                    n = len(saved_data.get("results", {}))
+                    saved_at = saved_data.get("saved_at","unknown")
+                    st.caption(f"File contains {n} ventures · saved {saved_at}")
+            except Exception as e:
+                st.error(f"Could not read file: {e}")
