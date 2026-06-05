@@ -1026,48 +1026,18 @@ with tab_ventures:
             if pct_num <= 1: pct_num *= 100
         except: pct_num = 0
 
-        vfiles = load_v_files(vname)
-
-        # Get cached RAG for title display
-        cached     = st.session_state.get("rag_scores_ai") or []
-        v_score    = next((s for s in cached if s["name"] == vname), None)
-        rag_label  = v_score["overall_rag"] if v_score else "—"
-        rag_emoji  = RAG_EMOJI.get(rag_label, "⚪")
+        # Get cached RAG for title — no file loading
+        cached    = st.session_state.get("rag_scores_ai") or []
+        v_score   = next((s for s in cached if s["name"] == vname), None)
+        rag_label = v_score["overall_rag"] if v_score else "—"
+        rag_emoji = RAG_EMOJI.get(rag_label, "⚪")
 
         with st.expander(f"{rag_emoji} **{vname}**  ·  {hub}  ·  {bucket}  ·  RAG: {rag_label}"):
 
-            # ── load documents only when card is opened ──
-            fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-            tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-            sp_text      = get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
-            journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
-
-            # Read ALL other files in venture folder — no character limit
-            other_texts = []
-            for key, fpath in vfiles.items():
-                if key.startswith("other_"):
-                    t = get_text(fpath)
-                    if t: other_texts.append(t)
-
-            # Load Common Documents venture-specific sections — cached per venture
-            venture_cache_key = f"vdocs_{vname}"
-            if venture_cache_key not in st.session_state:
-                with st.spinner(f"📂 Loading documents for {vname}..."):
-                    common_text_v  = load_common_docs()
-                    venture_common = extract_venture_from_common(vname, common_text_v)
-                    st.session_state[venture_cache_key] = venture_common
-            else:
-                venture_common = st.session_state[venture_cache_key]
-
-            # Basic keyword signals for summary only
-            all_text = " ".join(filter(None,
-                [notes, fb_text, tr_text, sp_text, journey_text, venture_common] + other_texts))
-            signals = detect_signals(all_text)
-
-            # ── sub-tabs ─────────────────────────────
+            # All file loading deferred — nothing runs until tab is clicked
             tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Basic Details", "🎙 Sessions", "✦ Success Signals", "🤖 AI Insights", "🔍 Data Sources"])
 
-            # TAB 1: Basic Details
+            # TAB 1: Basic Details — Excel data only, no files
             with tab1:
                 ca, cb = st.columns([3,1])
                 with ca:
@@ -1081,49 +1051,68 @@ with tab_ventures:
                 safe_pct = max(0.0, min(pct_num/100, 1.0)) if pct_num else 0.0
                 st.progress(safe_pct)
 
-                # ── RAG scores ───────────────────────
                 st.markdown("#### RAG Scores")
-
-                # Get cached scores if available
-                cached = st.session_state.get("rag_scores_ai") or st.session_state.get("rag_scores_kw") or []
-                v_score = next((s for s in cached if s["name"] == vname), None)
-
                 if v_score:
                     rs1, rs2, rs3 = st.columns(3)
-                    rs1.markdown(f"**Overall RAG**<br>{rag_badge(v_score['overall_rag'])}<br><small>{''}</small>", unsafe_allow_html=True)
-                    rs2.markdown(f"**Sprint Momentum**<br>{rag_badge(v_score['momentum_rag'])}<br><small>{v_score.get('momentum_reason','')[:80]}</small>", unsafe_allow_html=True)
-                    rs3.markdown(f"**Self Investment**<br>{rag_badge(v_score['investment_rag'])}<br><small>{v_score.get('investment_reason','')[:80]}</small>", unsafe_allow_html=True)
+                    rs1.markdown(f"**Overall RAG**<br>{rag_badge(v_score['overall_rag'])}", unsafe_allow_html=True)
+                    rs2.markdown(f"**Sprint Momentum**<br>{rag_badge(v_score['momentum_rag'])}<br><small>{v_score.get('momentum_reason','')[:100]}</small>", unsafe_allow_html=True)
+                    rs3.markdown(f"**Self Investment**<br>{rag_badge(v_score['investment_rag'])}<br><small>{v_score.get('investment_reason','')[:100]}</small>", unsafe_allow_html=True)
                 else:
-                    st.caption("RAG scores not computed yet. Go to Portfolio Overview and enable scoring first.")
+                    st.caption("RAG scores not computed yet — go to Portfolio Overview first.")
 
                 if notes:
                     st.markdown("**📝 Remarks:**")
-                    st.info(notes[:3000])
+                    st.info(notes)
 
-            # TAB 2: Sessions
+            # Helper: load files lazily — only when needed
+            def get_venture_files():
+                """Load all files for this venture on demand."""
+                fkey = f"vfiles_loaded_{vname}"
+                if fkey not in st.session_state:
+                    vf = load_v_files(vname)
+                    fb   = get_text(vf["feedback"])   if "feedback"   in vf else ""
+                    tr   = get_text(vf["transcript"]) if "transcript" in vf else ""
+                    sp   = get_text(vf["sprint"])     if "sprint"     in vf else ""
+                    jour = get_text(vf["journey"])    if "journey"    in vf else ""
+                    others = [get_text(p) for k,p in vf.items() if k.startswith("other_")]
+                    others = [t for t in others if t]
+                    st.session_state[fkey] = {"vf":vf,"fb":fb,"tr":tr,"sp":sp,"jour":jour,"others":others}
+                return st.session_state[fkey]
+
+            def get_venture_common():
+                """Load common docs venture sections on demand."""
+                ckey = f"vdocs_{vname}"
+                if ckey not in st.session_state:
+                    with st.spinner("📂 Scanning Common Documents..."):
+                        cdocs = load_common_docs()
+                        st.session_state[ckey] = extract_venture_from_common(vname, cdocs)
+                return st.session_state[ckey]
+
+            # TAB 2: Sessions — loads files on click
             with tab2:
+                docs = get_venture_files()
+                fb_text = docs["fb"]; tr_text = docs["tr"]
                 col_a, col_b = st.columns(2)
-                # Count sessions from session tracker if available
-                col_a.metric("Files Found", len(vfiles))
-                col_b.metric("Signal Count", len(signals))
+                col_a.metric("Files Found", len(docs["vf"]))
+                col_b.metric("Session Docs", sum(1 for x in [fb_text, tr_text] if x))
 
                 if fb_text:
                     st.markdown("**📋 Session Feedback:**")
-                    st.info(fb_text[:800] + ("..." if len(fb_text)>800 else ""))
+                    st.info(fb_text)
                 if tr_text:
                     st.markdown("**🎙 Transcript:**")
-                    st.info(tr_text[:800] + ("..." if len(tr_text)>800 else ""))
+                    st.info(tr_text)
                 if not fb_text and not tr_text:
                     st.info("No session files found in venture folder.")
 
             # TAB 3: Success Signals
             with tab3:
-                st.caption("Sources: Notes · Feedback · Transcript · Sprint Plan · Growth Journey · Common Documents · All Venture Files")
+                st.caption("Sources: Notes · All Venture Files · Common Documents (venture-specific sections only)")
 
                 sig_cache_key = f"signals_{vname}"
                 col_btn, col_clear = st.columns([2,1])
                 get_pressed   = col_btn.button("🔍 Get All Signals", key=f"get_sig_{vname}",
-                                               help="Reads ALL documents fully — no character limits")
+                                               help="Reads ALL documents — no character limits, drops irrelevant content")
                 clear_pressed = col_clear.button("🗑 Clear", key=f"clr_sig_{vname}")
 
                 if clear_pressed:
@@ -1134,15 +1123,19 @@ with tab_ventures:
                     st.session_state.pop(sig_cache_key, None)
                     with st.spinner(f"🤖 Reading all documents for {vname}..."):
                         try:
+                            # Load all files lazily
+                            docs          = get_venture_files()
+                            venture_common= get_venture_common()
+
                             full_sources = {
                                 "Notes":          notes or "",
-                                "Feedback":       fb_text,
-                                "Transcript":     tr_text,
-                                "Sprint Plan":    sp_text,
-                                "Growth Journey": journey_text,
+                                "Feedback":       docs["fb"],
+                                "Transcript":     docs["tr"],
+                                "Sprint Plan":    docs["sp"],
+                                "Growth Journey": docs["jour"],
                                 "Common Docs":    venture_common,
                             }
-                            for idx_o, ot in enumerate(other_texts):
+                            for idx_o, ot in enumerate(docs["others"]):
                                 full_sources[f"Venture File {idx_o+1}"] = ot
 
                             full_combined = "\n\n".join(
@@ -1234,14 +1227,17 @@ If none in a category: MOMENTUM: None found
                     if st.button("Generate AI Insight", key=f"ai_{vname}"):
                         with st.spinner("Analyzing..."):
                             try:
+                                docs = get_venture_files()
+                                vc   = get_venture_common()
                                 resp = client.messages.create(
                                     model="claude-sonnet-4-5", max_tokens=600,
                                     messages=[{"role":"user","content":
                                         f"""Venture: {vname}
 Hub: {hub} | Sprint: {sprint} | Completion: {pct_num:.0f}%
-Notes: {notes[:3000]}
-Feedback: {fb_text[:3000]}
-Transcript: {tr_text[:3000]}
+Notes: {notes}
+Feedback: {docs['fb']}
+Transcript: {docs['tr']}
+Common Docs: {vc[:3000]}
 
 Provide a concise analysis in plain text (no markdown headers, no # symbols).
 Use these section labels followed by a colon:
@@ -1282,58 +1278,37 @@ INVESTMENT RAG: Green/Amber/Red — one sentence reason."""}])
                 st.markdown("**📊 Source 1: Notes/Comments (Excel Dashboard)**")
                 if notes and notes not in ["—", ""]:
                     st.info(notes)
-                    if "$68" in notes or "68,000" in notes or "68000" in notes:
-                        st.success("✅ $68K export order mentioned here")
                 else:
                     st.warning("No notes found in Excel for this venture")
 
-                # Source 2: Venture folder files
+                # Source 2: Venture folder files — lazy loaded
                 st.markdown("**📁 Source 2: Venture Folder Files**")
-                if vfiles:
-                    known = ["feedback","transcript","sprint","journey"]
-                    for ftype, fpath in vfiles.items():
+                docs = get_venture_files()
+                if docs["vf"]:
+                    for ftype, fpath in docs["vf"].items():
                         st.caption(f"Found: `{ftype}` → `{Path(str(fpath)).name}`")
-                    # Show content for all files
-                    for ftype, fpath in vfiles.items():
+                    file_map = {"feedback": docs["fb"], "transcript": docs["tr"],
+                                "sprint": docs["sp"], "journey": docs["jour"]}
+                    for ftype, fpath in docs["vf"].items():
                         fname_display = Path(str(fpath)).name
-                        file_content  = get_text(fpath) if ftype not in ["feedback","transcript","sprint","journey"] else (
-                            fb_text if ftype=="feedback" else
-                            tr_text if ftype=="transcript" else
-                            sp_text if ftype=="sprint" else
-                            journey_text
-                        )
-                        if file_content:
+                        fc = file_map.get(ftype, get_text(fpath))
+                        if fc:
                             with st.expander(f"📄 {fname_display}"):
-                                st.text(file_content[:2000])
-                                if "$68" in file_content or "68,000" in file_content:
-                                    st.success("✅ $68K export order mentioned here")
+                                st.text(fc[:3000])
                 else:
-                    st.warning("No files found in venture folder on SharePoint")
+                    st.warning("No files found in venture folder")
 
-                # Source 3: Growth Journey Report
-                st.markdown("**📈 Source 3: Growth Journey Report**")
-                if journey_text:
-                    with st.expander("View Growth Journey content"):
-                        st.text(journey_text[:2000])
-                        if "$68" in journey_text or "68,000" in journey_text:
-                            st.success("✅ $68K export order mentioned here")
-                else:
-                    st.warning("No Growth Journey Report found")
-
-                # Source 4: Common Documents
-                st.markdown("**📂 Source 4: Common Documents (venture-specific sections)**")
-                common_text_cached = load_common_docs()
-                venture_common_preview = extract_venture_from_common(vname, common_text_cached)
-                if venture_common_preview:
+                # Source 3: Common Documents — lazy loaded
+                st.markdown("**📂 Source 3: Common Documents (venture-specific sections only)**")
+                vc = get_venture_common()
+                if vc:
                     with st.expander("View Common Documents excerpt"):
-                        st.text(venture_common_preview[:3000])
-                        if "$68" in venture_common_preview or "68,000" in venture_common_preview:
-                            st.success("✅ $68K export order mentioned here")
+                        st.text(vc[:5000])
                 else:
                     st.warning(f"No sections mentioning '{vname}' found in Common Documents")
 
-                # Source 5: Attendance
-                st.markdown("**📋 Source 5: Attendance Data**")
+                # Source 4: Attendance
+                st.markdown("**📋 Source 4: Attendance Data**")
                 sp_id_att = id(sp_reader) if sp_reader else 0
                 att_data_preview = load_attendance_data(sp_id_att, use_sp, root_path)
                 att_preview = get_attendance_for_venture(vname, att_data_preview)
