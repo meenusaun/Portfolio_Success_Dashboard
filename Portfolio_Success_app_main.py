@@ -793,7 +793,7 @@ with tab_overview:
     st.divider()
 
     # ── 2-column layout ───────────────────────────────
-    left_col, right_col = st.columns(2)
+    left_col, gap_col, right_col = st.columns([5, 0.5, 5])
 
     # LEFT: RAG distribution + Sprint Stage
     with left_col:
@@ -833,7 +833,7 @@ with tab_overview:
         h2.markdown("**🟢**");  h3.markdown("**🟡**")
         h4.markdown("**🔴**");  h5.markdown("**⚪**")
         st.divider()
-        for hub, counts in sorted(hub_rag.items(), key=lambda x:-x[1]["Total"]):
+        for hub, counts in sorted(hub_rag.items(), key=lambda x: (x[0] == "Other", -x[1]["Total"])):
             r0,r1,r2,r3,r4,r5 = st.columns([2.2,0.8,0.8,0.8,0.8,0.8])
             r0.markdown(f"**{hub}**")
             r1.markdown(f"**{counts['Total']}**")
@@ -869,7 +869,7 @@ with tab_overview:
     st.divider()
 
     grand_total = 0; grand_scores = []
-    for hub in sorted(hub_pivot.keys()):
+    for hub in sorted(hub_pivot.keys(), key=lambda x: (x == "Other", x)):
         hub_total = 0; hub_scores_all = []
         hub_greens = hub_pivot[hub].get("Green",{}).get("count",0)
         hub_ambers = hub_pivot[hub].get("Amber",{}).get("count",0)
