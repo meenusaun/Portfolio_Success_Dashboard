@@ -704,11 +704,52 @@ def rag_badge(rag):
     emoji = RAG_EMOJI.get(rag, "⚪")
     return f'<span class="{css}">{emoji} {rag}</span>'
 
-# ── check if batches are processed ───────────────────
-BATCH_RESULTS_KEY = "batch_results"
-batch_results     = st.session_state.get(BATCH_RESULTS_KEY, {})
-done_count        = sum(1 for v in batch_results.values() if v.get("status") == "done")
-all_processed     = done_count > 0 and st.session_state.get("synced_to_dashboard", False)
+# ── persistent storage paths ─────────────────────────
+BATCH_RESULTS_KEY  = "batch_results"
+BATCH_RESULTS_FILE = f"{SP_FOLDER}/batch_results.json"
+
+# ── auto-load batch results from SharePoint on first load ──
+if BATCH_RESULTS_KEY not in st.session_state:
+    if use_sp and sp_reader:
+        try:
+            if sp_reader.file_exists(BATCH_RESULTS_FILE):
+                with st.spinner("📂 Loading previous batch results..."):
+                    saved = sp_reader.download_json(BATCH_RESULTS_FILE)
+                    st.session_state[BATCH_RESULTS_KEY] = saved.get("results", {})
+                    if saved.get("synced"):
+                        st.session_state["synced_to_dashboard"] = True
+                        # Rebuild RAG cache from saved results
+                        rag_cache = []
+                        for vn, vr in st.session_state[BATCH_RESULTS_KEY].items():
+                            if vr.get("status") == "done":
+                                row = get_row(vn)
+                                rag = vr.get("rag", {})
+                                rag_cache.append({
+                                    "name": vn,
+                                    "hub":    cv(row, col_hub),
+                                    "vp":     cv(row, col_vp) if col_vp else "—",
+                                    "sprint": cv(row, col_sprint),
+                                    "rev":    cv(row, col_rev),
+                                    "bucket": get_stage_bucket(row[col_pct] if (row is not None and col_pct) else None),
+                                    "pct_raw": row[col_pct] if (row is not None and col_pct) else None,
+                                    "notes":  cv(row, col_notes, default=""),
+                                    **{k: rag.get(k, "ZERO") for k in
+                                       ["overall_rag","momentum_rag","investment_rag",
+                                        "momentum_reason","investment_reason",
+                                        "momentum_score","investment_score"]}
+                                })
+                                # Restore signals cache too
+                                if vr.get("signals"):
+                                    st.session_state[f"signals_{vn}"] = vr["signals"]
+                        st.session_state["rag_scores_ai"] = rag_cache
+        except Exception as e:
+            pass  # No previous results — start fresh
+    if BATCH_RESULTS_KEY not in st.session_state:
+        st.session_state[BATCH_RESULTS_KEY] = {}
+
+batch_results = st.session_state.get(BATCH_RESULTS_KEY, {})
+done_count    = sum(1 for v in batch_results.values() if v.get("status") == "done")
+all_processed = done_count > 0 and st.session_state.get("synced_to_dashboard", False)
 
 # ── top navigation tabs ───────────────────────────────
 if all_processed:
@@ -1501,12 +1542,18 @@ with tab_process:
             "complete": done_in_batch == len(batch_ventures)
         })
 
-    col_run_all, col_clear_all = st.columns([2,1])
-    run_all   = col_run_all.button("🚀 Run All Batches", help="Process all ventures sequentially")
-    clear_all = col_clear_all.button("🗑 Clear All Results", help="Reset all batch results")
+    col_run_all, col_run_new, col_clear_all = st.columns([2,2,1])
+    run_all   = col_run_all.button("🚀 Run All Batches",     help="Process all ventures sequentially")
+    run_new   = col_run_new.button("🔄 Run Only Unprocessed", help="Skip already-done ventures, only process new/pending ones")
+    clear_all = col_clear_all.button("🗑 Clear All",         help="Reset all batch results")
 
     if clear_all:
         st.session_state.pop(BATCH_RESULTS_KEY, None)
+        st.session_state.pop("synced_to_dashboard", None)
+        # Also delete from SharePoint
+        if use_sp and sp_reader:
+            try: sp_reader.upload_json(BATCH_RESULTS_FILE, {"results":{}, "synced":False})
+            except: pass
         st.rerun()
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1524,7 +1571,8 @@ with tab_process:
                 if vs == "done":
                     rag  = vr.get("rag",{})
                     nsig = len(vr.get("signals",{}).get("momentum",[])) + len(vr.get("signals",{}).get("investment",[]))
-                    st.caption(f"{icon} {vname_b}  ·  Overall: {RAG_EMOJI.get(rag.get('overall_rag',''),'⚪')} {rag.get('overall_rag','')}  ·  {nsig} signals  ·  {vr.get('total_chars',0):,} chars  ·  {vr.get('num_chunks',1)} chunk(s)")
+                    proc = vr.get("processed_at","—")
+                    st.caption(f"{icon} {vname_b}  ·  {RAG_EMOJI.get(rag.get('overall_rag',''),'⚪')} {rag.get('overall_rag','')}  ·  {nsig} signals  ·  {vr.get('total_chars',0):,} chars  ·  {vr.get('num_chunks',1)} chunk(s)  ·  📅 {proc}")
                 elif vs == "error":
                     st.caption(f"{icon} {vname_b}  ·  Error: {vr.get('error','')[:80]}")
                 else:
@@ -1533,7 +1581,11 @@ with tab_process:
             st.markdown("")
             run_batch = st.button(f"▶ Run Batch {batch['num']}", key=f"run_batch_{batch['num']}")
 
-            if run_batch or (run_all and not batch["complete"]):
+            should_run = run_batch or \
+                         (run_all and not batch["complete"]) or \
+                         (run_new and batch["done"] < batch["total"])
+
+            if should_run:
                 prog_b = st.progress(0, text=f"Starting batch {batch['num']}...")
                 for vi, vname_b in enumerate(batch["ventures"]):
                     if batch_results.get(vname_b,{}).get("status") == "done":
@@ -1553,20 +1605,34 @@ with tab_process:
                         client       = client,
                         vname        = vname_b,
                         venture_data = {},
-                        load_v_files_fn    = load_v_files,
-                        get_text_fn        = get_text,
-                        extract_common_fn  = extract_venture_from_common,
-                        load_common_fn     = load_common_preloaded,
-                        get_attendance_fn  = get_attendance_for_venture,
-                        attendance_data    = attendance_b,
-                        notes        = notes,
-                        sprint       = sprint,
-                        pct_raw      = pct,
+                        load_v_files_fn   = load_v_files,
+                        get_text_fn       = get_text,
+                        extract_common_fn = extract_venture_from_common,
+                        load_common_fn    = load_common_preloaded,
+                        get_attendance_fn = get_attendance_for_venture,
+                        attendance_data   = attendance_b,
+                        notes   = notes,
+                        sprint  = sprint,
+                        pct_raw = pct,
                     )
+
+                    # Add timestamp
+                    from datetime import datetime
+                    result["processed_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
                     if BATCH_RESULTS_KEY not in st.session_state:
                         st.session_state[BATCH_RESULTS_KEY] = {}
                     st.session_state[BATCH_RESULTS_KEY][vname_b] = result
+
+                    # Auto-save to SharePoint after each venture
+                    if use_sp and sp_reader:
+                        try:
+                            sp_reader.upload_json(BATCH_RESULTS_FILE, {
+                                "results": st.session_state[BATCH_RESULTS_KEY],
+                                "synced":  st.session_state.get("synced_to_dashboard", False),
+                                "saved_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                            })
+                        except: pass  # Don't fail if save fails
 
                 prog_b.progress(1.0, text=f"✅ Batch {batch['num']} complete!")
                 st.rerun()
@@ -1575,14 +1641,28 @@ with tab_process:
     if done_count > 0:
         st.divider()
         st.subheader("Step 3 — Sync to Dashboard")
-        st.caption("Push batch results to Portfolio Overview and Venture Cards")
 
-        if st.button("🔄 Sync Results to Dashboard"):
+        # Show last processed info
+        last_saved = None
+        if use_sp and sp_reader:
+            try:
+                saved_meta = sp_reader.download_json(BATCH_RESULTS_FILE)
+                last_saved = saved_meta.get("saved_at")
+            except: pass
+
+        col_sync_info, col_sync_btn = st.columns([3,1])
+        if last_saved:
+            col_sync_info.caption(f"💾 Last saved to SharePoint: {last_saved}  ·  {done_count} ventures processed")
+        else:
+            col_sync_info.caption(f"{done_count} ventures processed — not yet saved to SharePoint")
+
+        if col_sync_btn.button("🔄 Sync to Dashboard"):
+            from datetime import datetime
             rag_cache = []
             for vname_b, vr in batch_results.items():
                 if vr.get("status") != "done": continue
-                row    = get_row(vname_b)
-                rag    = vr.get("rag",{})
+                row = get_row(vname_b)
+                rag = vr.get("rag",{})
                 rag_cache.append({
                     "name":             vname_b,
                     "hub":              cv(row, col_hub),
@@ -1599,13 +1679,27 @@ with tab_process:
                     "investment_reason":rag.get("investment_reason","—"),
                     "momentum_score":   rag.get("momentum_score",0),
                     "investment_score": rag.get("investment_score",0),
+                    "processed_at":     vr.get("processed_at","—"),
                 })
-            st.session_state["rag_scores_ai"] = rag_cache
+            st.session_state["rag_scores_ai"]       = rag_cache
             st.session_state["synced_to_dashboard"] = True
 
-            # Also cache signals per venture
+            # Cache signals per venture
             for vname_b, vr in batch_results.items():
                 if vr.get("status") == "done" and vr.get("signals"):
                     st.session_state[f"signals_{vname_b}"] = vr["signals"]
 
-            st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard! Go to 📊 Portfolio Overview to view results.")
+            # Save synced state to SharePoint
+            if use_sp and sp_reader:
+                try:
+                    sp_reader.upload_json(BATCH_RESULTS_FILE, {
+                        "results":  batch_results,
+                        "synced":   True,
+                        "saved_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                    })
+                    st.success(f"✅ Synced {len(rag_cache)} ventures · Saved to SharePoint · Go to 📊 Portfolio Overview")
+                except Exception as se:
+                    st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard!")
+                    st.warning(f"SharePoint save failed: {se}")
+            else:
+                st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard!")
