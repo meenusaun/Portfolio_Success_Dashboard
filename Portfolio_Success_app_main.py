@@ -317,6 +317,8 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
     def process_file(fname, content_bytes=None, fpath=None):
         ext = Path(fname).suffix.lower()
         if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
+        # Skip the main dashboard file — it's already loaded at startup
+        if "journey_accelerate_portfolio" in fname.lower(): return
         try:
             if content_bytes:
                 text = extract_text_bytes(content_bytes, fname)
@@ -352,33 +354,46 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
     return "\n\n".join(texts)
 
 def extract_venture_from_common(venture_name, common_text, file_keyword=None):
-    """Extract only sections mentioning this venture from common docs."""
-    if not common_text or not venture_name: return ""
+    """Extract only sections mentioning this venture from common docs.
+    Also pulls venture row data directly from the loaded company_df."""
+    if not venture_name: return ""
     relevant = []
-    sections = common_text.split("=== FILE:")
-    for section in sections:
-        if not section.strip(): continue
-        fname_part = section.split("===")[0].strip() if "===" in section else ""
-        if file_keyword and file_keyword.lower() not in fname_part.lower():
-            continue
-        if venture_name.lower() not in section.lower():
-            continue
 
-        lines = section.split("\n")
-        venture_lines = []
-        is_dashboard = "journey_accelerate_portfolio" in fname_part.lower() or \
-                       "portfolio dashboard" in fname_part.lower()
+    # Source 1: Pull directly from already-loaded company_df (dashboard Excel)
+    try:
+        if col_name and company_df is not None:
+            match = all_rows[all_rows[col_name].astype(str).str.strip() == venture_name]
+            if not match.empty:
+                row = match.iloc[0]
+                # Build a rich text summary of all non-empty columns
+                row_parts = []
+                for col in company_df.columns:
+                    val = str(row[col]).strip()
+                    if val and val not in ["nan","None","NaT",""]:
+                        row_parts.append(f"{col}: {val}")
+                if row_parts:
+                    relevant.append(f"[Portfolio Dashboard — {venture_name} row]\n" + "\n".join(row_parts))
+    except: pass
 
-        for i, line in enumerate(lines):
-            if venture_name.lower() in line.lower():
-                # Dashboard file: grab the full row (wider context)
-                context = 3 if is_dashboard else 2
-                start = max(0, i - context)
-                end   = min(len(lines), i + 8 if is_dashboard else i + 5)
-                venture_lines.extend(lines[start:end])
-
-        if venture_lines:
-            relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
+    # Source 2: Common Documents text search
+    if common_text:
+        sections = common_text.split("=== FILE:")
+        for section in sections:
+            if not section.strip(): continue
+            fname_part = section.split("===")[0].strip() if "===" in section else ""
+            if file_keyword and file_keyword.lower() not in fname_part.lower():
+                continue
+            if venture_name.lower() not in section.lower():
+                continue
+            lines = section.split("\n")
+            venture_lines = []
+            for i, line in enumerate(lines):
+                if venture_name.lower() in line.lower():
+                    start = max(0, i-2)
+                    end   = min(len(lines), i+8)
+                    venture_lines.extend(lines[start:end])
+            if venture_lines:
+                relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
 
     return "\n\n".join(relevant)[:3000]
 
