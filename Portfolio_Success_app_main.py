@@ -957,11 +957,12 @@ with tab_ventures:
             if pct_num <= 1: pct_num *= 100
         except: pct_num = 0
 
-        vfiles  = load_v_files(vname)
-        fb_text = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-        tr_text = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-        sp_text = get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
-        signals = detect_signals((notes or "")+" "+(fb_text or "")+" "+(tr_text or ""))
+        vfiles       = load_v_files(vname)
+        fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+        tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+        sp_text      = get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
+        journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
+        signals      = detect_signals((notes or "")+" "+(fb_text or "")+" "+(tr_text or ""))
 
         with st.expander(f"**{vname}**  ·  {hub}  ·  {bucket}"):
 
