@@ -284,9 +284,10 @@ def load_v_files(vname):
             items = sp_reader.list_files(folder)
             for fname in items:
                 fl = fname.lower(); fp = f"{folder}/{fname}"
-                if "transcript" in fl: files["transcript"] = fp
-                elif "feedback" in fl: files["feedback"]   = fp
-                elif "sprint plan" in fl or "growth sprint" in fl: files["sprint"] = fp
+                if "transcript"   in fl: files["transcript"]     = fp
+                elif "feedback"   in fl: files["feedback"]       = fp
+                elif "growth sprint" in fl or "sprint plan" in fl: files["sprint"]  = fp
+                elif "growth journey" in fl or "journey report" in fl: files["journey"] = fp
         except: pass
     else:
         vpath = os.path.join(root_path or "", vname)
@@ -294,9 +295,10 @@ def load_v_files(vname):
             for f in os.listdir(vpath):
                 fl = f.lower(); fp = os.path.join(vpath, f)
                 if not os.path.isfile(fp): continue
-                if "transcript" in fl: files["transcript"] = fp
-                elif "feedback"  in fl: files["feedback"]   = fp
-                elif "sprint plan" in fl or "growth sprint" in fl: files["sprint"] = fp
+                if "transcript"   in fl: files["transcript"]     = fp
+                elif "feedback"   in fl: files["feedback"]       = fp
+                elif "growth sprint" in fl or "sprint plan" in fl: files["sprint"]  = fp
+                elif "growth journey" in fl or "journey report" in fl: files["journey"] = fp
     return files
 
 def get_text(fpath):
@@ -339,27 +341,28 @@ def load_common_docs_cached(_sp_id, use_sp, root_path):
                     if text: texts.append(f"=== FILE: {f} ===\n{text[:3000]}")
     return "\n\n".join(texts)
 
-def extract_venture_from_common(venture_name, common_text):
-    """Extract only sections mentioning this venture from common docs."""
+def extract_venture_from_common(venture_name, common_text, file_keyword=None):
+    """Extract only sections mentioning this venture from common docs.
+    Optionally filter to files whose name contains file_keyword."""
     if not common_text or not venture_name: return ""
-    # Split by file sections
     relevant = []
     sections = common_text.split("=== FILE:")
     for section in sections:
-        # Check if venture name appears in this section (case-insensitive)
+        if not section.strip(): continue
+        # Apply file keyword filter if specified
+        fname_part = section.split("===")[0].strip() if "===" in section else ""
+        if file_keyword and file_keyword.lower() not in fname_part.lower():
+            continue
         if venture_name.lower() in section.lower():
-            # Extract paragraphs/lines mentioning the venture
             lines = section.split("\n")
             venture_lines = []
             for i, line in enumerate(lines):
                 if venture_name.lower() in line.lower():
-                    # Include surrounding context (2 lines before and after)
                     start = max(0, i-2)
                     end   = min(len(lines), i+5)
                     venture_lines.extend(lines[start:end])
             if venture_lines:
-                fname = section.split("===")[0].strip() if "===" in section else "Common Doc"
-                relevant.append(f"[{fname}]\n" + "\n".join(venture_lines))
+                relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
     return "\n\n".join(relevant)[:2000]
 
 def load_common_docs():
@@ -368,7 +371,118 @@ def load_common_docs():
     return load_common_docs_cached(sp_id, use_sp, root_path)
 
 @st.cache_data(show_spinner=False, ttl=600)
-def compute_rag_ai(vname, notes, fb_text, tr_text, common_text, pct_raw, _client_key):
+def load_attendance_data(_sp_id, use_sp, root_path):
+    """Load attendance data from 'd&v ATTENDANCE IN LAST 2 MONTHS' file in Common Documents."""
+    attendance = {}  # {venture_name: {"sessions": int, "dates": [str], "weeks_active": int}}
+    
+    ATTENDANCE_KEYWORDS = ["attendance", "d&v attendance", "d & v attendance"]
+    
+    try:
+        content_bytes = None
+        fname_found   = None
+
+        if use_sp and ENV_CLIENT_ID:
+            from sharepoint_reader import SharePointReader
+            sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+            items = sp.list_files(COMMON_FOLDER)
+            for fname in items:
+                if any(kw in fname.lower() for kw in ATTENDANCE_KEYWORDS):
+                    content_bytes = sp.download_file(f"{COMMON_FOLDER}/{fname}")
+                    fname_found   = fname
+                    break
+        elif root_path:
+            cpath = os.path.join(root_path, "Common Documents")
+            if os.path.isdir(cpath):
+                for f in os.listdir(cpath):
+                    if any(kw in f.lower() for kw in ATTENDANCE_KEYWORDS):
+                        with open(os.path.join(cpath, f), "rb") as fh:
+                            content_bytes = fh.read()
+                        fname_found = f
+                        break
+
+        if not content_bytes or not fname_found:
+            return attendance
+
+        # Save to temp and parse
+        ext  = Path(fname_found).suffix.lower()
+        tmp  = os.path.join(tempfile.gettempdir(), f"nen_attendance{ext}")
+        with open(tmp, "wb") as f: f.write(content_bytes)
+
+        if ext == ".pdf":
+            import pdfplumber
+            with pdfplumber.open(tmp) as pdf:
+                text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+            # Parse text format: "VentureName  date1  date2  date3..."
+            lines = text.split("\n")
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("Hub") or line.startswith("Partner") or line.startswith("Status") or line.startswith("Sum"):
+                    continue
+                # Skip hub names (single word lines that are city names)
+                parts = line.split()
+                if len(parts) < 2: continue
+                # Date pattern: dd-mm
+                date_pattern = re.compile(r'\d{2}-\d{2}')
+                dates = date_pattern.findall(line)
+                if dates:
+                    # Venture name is everything before the first date
+                    first_date_idx = line.find(dates[0])
+                    vname_raw = line[:first_date_idx].strip()
+                    # Remove trailing abbreviation in parentheses if present
+                    vname_clean = re.sub(r'\s*\([^)]*\)\s*$', '', vname_raw).strip()
+                    if vname_clean and len(vname_clean) > 3:
+                        attendance[vname_clean] = {
+                            "sessions":     len(dates),
+                            "dates":        dates,
+                            "weeks_active": len(set(dates))
+                        }
+
+        elif ext in [".xlsx", ".xls"]:
+            xl = pd.ExcelFile(tmp)
+            for sheet in xl.sheet_names:
+                df = pd.read_excel(tmp, sheet_name=sheet, header=None)
+                for _, row in df.iterrows():
+                    row_vals = [str(v).strip() for v in row if str(v).strip() not in ["nan","None",""]]
+                    if len(row_vals) < 2: continue
+                    date_pattern = re.compile(r'\d{2}-\d{2}')
+                    dates = [v for v in row_vals[1:] if date_pattern.match(v)]
+                    if dates:
+                        vname_clean = re.sub(r'\s*\([^)]*\)\s*$', '', row_vals[0]).strip()
+                        if vname_clean and len(vname_clean) > 3:
+                            attendance[vname_clean] = {
+                                "sessions":     len(dates),
+                                "dates":        dates,
+                                "weeks_active": len(set(dates))
+                            }
+
+    except Exception as e:
+        pass
+
+    return attendance
+
+def get_attendance_for_venture(vname, attendance_data):
+    """Find attendance record for a venture using fuzzy name matching."""
+    if not attendance_data: return None
+    
+    # Exact match first
+    if vname in attendance_data: return attendance_data[vname]
+    
+    # Partial match — check if venture name words appear in attendance key
+    vname_lower = vname.lower()
+    for att_name, data in attendance_data.items():
+        att_lower = att_name.lower()
+        # Check if first 2 significant words match
+        v_words = [w for w in vname_lower.split() if len(w) > 3]
+        a_words = [w for w in att_lower.split() if len(w) > 3]
+        matches = sum(1 for w in v_words if any(w in aw or aw in w for aw in a_words))
+        if matches >= 2 or (len(v_words) == 1 and matches == 1):
+            return data
+    return None
+
+@st.cache_data(show_spinner=False, ttl=600)
+def compute_rag_ai(vname, notes, fb_text, tr_text, common_text, pct_raw,
+                   att_sessions, att_dates, att_weeks, sprint_type,
+                   growth_journey_text, _client_key):
     """Use Claude to compute RAG scores for a venture."""
     if not client: return "Unknown", "Unknown", "No AI key", "No AI key"
     
@@ -380,48 +494,117 @@ def compute_rag_ai(vname, notes, fb_text, tr_text, common_text, pct_raw, _client
     # Extract only sections mentioning this venture from common docs
     venture_common = extract_venture_from_common(vname, common_text) if common_text else ""
 
+    # Format attendance info
+    if att_sessions and att_sessions > 0:
+        att_summary = f"{att_sessions} sessions attended in last 2 months (dates: {', '.join(att_dates or [])}), active in {att_weeks} weeks"
+    else:
+        att_summary = "No attendance data found"
+
+    # Sprint-specific investment signals based on sprint type
+    sprint_investment_guide = get_sprint_investment_guide(sprint_type)
+
     combined = f"""
 Venture: {vname}
+Sprint Type: {sprint_type or 'Unknown'}
 Sprint Completion: {pct:.0f}%
-Program Notes/Remarks: {notes[:800]}
-Session Feedback: {fb_text[:600]}
-Transcript: {tr_text[:600]}
-Common Documents (venture-specific excerpts): {venture_common[:800]}
+Attendance (last 2 months): {att_summary}
+Program Notes/Remarks: {notes[:600]}
+Session Feedback: {fb_text[:400]}
+Transcript: {tr_text[:400]}
+Growth Journey Report: {growth_journey_text[:600]}
+Common Documents (venture-specific excerpts): {venture_common[:500]}
 """
-    prompt = f"""Analyze this venture data and return ONLY a JSON object with 4 keys:
+    prompt = f"""Analyze this venture data and return ONLY a JSON object with 6 keys:
 - "momentum_rag": one of "Green", "Amber", "Red", "ZERO"
-- "momentum_reason": one sentence explanation
-- "investment_rag": one of "Green", "Amber", "Red", "ZERO"  
-- "investment_reason": one sentence explanation
+- "momentum_reason": one sentence explanation (mention attendance and founder engagement)
+- "investment_rag": one of "Green", "Amber", "Red", "ZERO"
+- "investment_reason": one sentence explanation (must reference sprint-specific signals)
+- "momentum_score": integer 0-10 based on scoring matrix below
+- "investment_score": integer 0-10 based on scoring matrix below
 
-Scoring guide:
-Sprint Momentum Score:
-- Green: Active, completing tasks, engaged founder, positive feedback
-- Amber: Some progress but inconsistent, needs nudging, partial completion
-- Red: Not engaged, founder dissatisfied, no progress, wants to drop out
-- ZERO: No data available
+SPRINT MOMENTUM SCORE DEFINITIONS (use attendance as key signal):
+- Green (score 7-10): Founder ENGAGED, will complete sprint IN LINE with objectives. Active attendance (3+ sessions), positive progress.
+- Amber (score 4-6): Founder engaged BUT sprint running with DELAY. Founder not fully happy. Moderate attendance (1-2 sessions), inconsistent progress.
+- Red (score 1-3): Founder DISENGAGED, sprint UNLIKELY to reach objective. Low/no attendance, no progress.
+- ZERO (score 0): No data available from any source.
 
-Sprint Self Investment Signal Score:
-- Green: Hired staff, invested in equipment/facility, self-funded activities
-- Amber: Planning to invest, exploring options, partial commitment
-- Red: No investment intent, focused elsewhere, withdrawing
-- ZERO: No data available
+SELF INVESTMENT SIGNAL DEFINITIONS (MUST be specific to sprint type '{sprint_type}'):
+{sprint_investment_guide}
+- ZERO (score 0): No data available.
+
+NUMERIC SCORING MATRIX (use this to pick exact score):
+- Momentum Green + Investment Green = 10
+- Momentum Green + Investment Amber = 8
+- Momentum Green + Investment Red   = 5
+- Momentum Green + Investment ZERO  = 5
+- Momentum Amber + Investment Green = 8
+- Momentum Amber + Investment Amber = 7
+- Momentum Amber + Investment Red   = 3
+- Momentum Amber + Investment ZERO  = 3
+- Momentum Red   + Investment Green = 5
+- Momentum Red   + Investment Amber = 3
+- Momentum Red   + Investment Red   = 1
+- Momentum Red   + Investment ZERO  = 0
+- Momentum ZERO  + Investment Green = 5
+- Momentum ZERO  + Investment Amber = 3
+- Momentum ZERO  + Investment ZERO  = 0
 
 Venture data:
 {combined}
 
-Return ONLY the JSON, no other text."""
+Return ONLY the JSON object, no other text."""
 
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=300,
+            model="claude-sonnet-4-5", max_tokens=400,
             messages=[{"role":"user","content":prompt}])
         raw = re.sub(r"```json|```","",resp.content[0].text.strip()).strip()
         data = json.loads(raw)
         return (data.get("momentum_rag","Unknown"), data.get("investment_rag","Unknown"),
-                data.get("momentum_reason","—"), data.get("investment_reason","—"))
+                data.get("momentum_reason","—"), data.get("investment_reason","—"),
+                data.get("momentum_score", 0), data.get("investment_score", 0))
     except Exception as e:
-        return "Unknown","Unknown",f"Error: {e}","—"
+        return "Unknown","Unknown",f"Error: {e}","—", 0, 0
+
+
+def get_sprint_investment_guide(sprint_type):
+    """Return sprint-specific investment signal criteria."""
+    if not sprint_type or sprint_type in ["—","Unknown",""]:
+        return """- Green: Hired staff, invested in equipment/facility, self-funded sprint activities
+- Amber: Planning to invest, exploring options, partial commitment
+- Red: No investment intent, focused elsewhere, withdrawing"""
+
+    st_lower = sprint_type.lower()
+
+    if any(x in st_lower for x in ["export","international","global"]):
+        return """This venture is on an EXPORT sprint. Investment signals must be EXPORT-specific:
+- Green: Hired export manager / sales rep, attended trade fairs, got export certifications, opened overseas accounts, onboarded freight forwarder, paid for market research, self-funded export activities
+- Amber: Planning export hire, exploring certifications, initial buyer conversations started
+- Red: No export-related investment, paused export activities, no market engagement"""
+
+    elif any(x in st_lower for x in ["product","r&d","research","development","innovation"]):
+        return """This venture is on a PRODUCT DEVELOPMENT sprint. Investment signals must be product-specific:
+- Green: Invested in R&D, purchased equipment/machinery, hired technical staff, filed patents, prototype built, testing conducted
+- Amber: Planning equipment purchase, technical hire in progress, design stage
+- Red: No product investment, development stalled, no technical progress"""
+
+    elif any(x in st_lower for x in ["market","segment","customer","channel"]):
+        return """This venture is on a NEW MARKET/SEGMENT sprint. Investment signals must be market-specific:
+- Green: Hired sales/BD staff, invested in marketing, attended industry events, opened new dealer/distributor, ran pilots in new segment
+- Amber: Planning market entry, initial outreach done, evaluating channels
+- Red: No market investment, no new customer acquisition effort, withdrawn from segment"""
+
+    elif any(x in st_lower for x in ["route","distribution","retail","supply"]):
+        return """This venture is on a ROUTE TO MARKET sprint. Investment signals must be distribution-specific:
+- Green: Onboarded distributors, invested in logistics, hired field sales, opened new retail channels
+- Amber: Distributor talks initiated, evaluating logistics partners
+- Red: No distribution investment, existing channels unchanged"""
+
+    else:
+        return f"""This venture is on a '{sprint_type}' sprint. Look for investment signals SPECIFIC to this sprint type:
+- Green: Hired relevant staff, invested money, took concrete paid action directly related to {sprint_type} goals
+- Amber: Planning investment, initial steps taken, partial commitment
+- Red: No investment related to sprint goals, focused elsewhere"""
 
 def rag_badge(rag):
     css = RAG_COLOR.get(rag, "rag-zero")
@@ -481,12 +664,18 @@ with tab_overview:
                 "overall_rag":     "ZERO",
                 "momentum_reason": "Pending",
                 "investment_reason": "Pending",
+                "momentum_score":  0,
+                "investment_score": 0,
             })
 
-        # Step 2: Load common documents once
-        with st.spinner("📂 Loading Common Documents..."):
-            common_text = load_common_docs()
-        col_info.caption(f"📂 Common Documents loaded: {len(common_text)} chars")
+        # Step 2: Load common documents + attendance once
+        with st.spinner("📂 Loading Common Documents and Attendance data..."):
+            common_text    = load_common_docs()
+            sp_id          = id(sp_reader) if sp_reader else 0
+            attendance_data= load_attendance_data(sp_id, use_sp, root_path)
+
+        att_count = len(attendance_data)
+        col_info.caption(f"📂 Common Documents loaded · 📋 Attendance records: {att_count} ventures")
 
         # Step 3: AI scoring in parallel — ALL ventures scored
         # Common Documents is primary source, Notes + files are supplementary
@@ -498,36 +687,50 @@ with tab_overview:
 
             def score_one(v):
                 # Load venture-specific files
-                vfiles  = load_v_files(v["name"])
-                fb_text = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-                tr_text = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+                vfiles       = load_v_files(v["name"])
+                fb_text      = get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+                tr_text      = get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+                journey_text = get_text(vfiles["journey"])    if "journey"    in vfiles else ""
+
+                # Also check common docs for growth journey reports mentioning this venture
+                if not journey_text:
+                    journey_text = extract_venture_from_common(
+                        v["name"], common_text,
+                        file_keyword="growth journey") if common_text else ""
+
+                # Get attendance for this venture
+                att          = get_attendance_for_venture(v["name"], attendance_data)
+                att_sessions = att["sessions"]     if att else 0
+                att_dates    = att["dates"]        if att else []
+                att_weeks    = att["weeks_active"] if att else 0
 
                 # Extract venture-specific section from common documents
-                venture_common = extract_venture_from_common(v["name"], common_text)
+                venture_common = extract_venture_from_common(v["name"], common_text) if common_text else ""
 
                 # Only skip if absolutely no data from ANY source
                 has_data = any([
                     v["notes"] and v["notes"] not in ["—","Pending",""],
-                    fb_text,
-                    tr_text,
-                    venture_common
+                    fb_text, tr_text, venture_common,
+                    att_sessions > 0, journey_text
                 ])
 
                 if not has_data:
                     return v["name"], "ZERO", "ZERO", "No data found in any source", "No data found in any source"
 
-                m, i, mr, ir = compute_rag_ai(
+                m, i, mr, ir, ms, is_ = compute_rag_ai(
                     v["name"], v["notes"], fb_text, tr_text,
-                    common_text, v["pct_raw"], api_key)
-                return v["name"], m, i, mr, ir
+                    common_text, v["pct_raw"],
+                    att_sessions, att_dates, att_weeks,
+                    v["sprint"], journey_text, api_key)
+                return v["name"], m, i, mr, ir, ms, is_
 
             results = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
                 futures = {ex.submit(score_one, v): v for v in venture_data}
                 for fut in concurrent.futures.as_completed(futures):
                     try:
-                        vn, m, i, mr, ir = fut.result()
-                        results[vn] = (m, i, mr, ir)
+                        vn, m, i, mr, ir, ms, is_ = fut.result()
+                        results[vn] = (m, i, mr, ir, ms, is_)
                     except Exception as e:
                         pass
                     completed[0] += 1
@@ -539,12 +742,14 @@ with tab_overview:
 
             for v in venture_data:
                 if v["name"] in results:
-                    m, i, mr, ir = results[v["name"]]
+                    m, i, mr, ir, ms, is_ = results[v["name"]]
                     v["momentum_rag"]      = m
                     v["investment_rag"]    = i
                     v["overall_rag"]       = combine_rag(m, i)
                     v["momentum_reason"]   = mr
                     v["investment_reason"] = ir
+                    v["momentum_score"]    = ms
+                    v["investment_score"]  = is_
         else:
             st.warning("⚠️ No API key — add ANTHROPIC_API_KEY to Streamlit secrets for AI scoring.")
 
@@ -609,9 +814,74 @@ with tab_overview:
         col.markdown(f"**{stage}** — {cnt} ventures ({pct}%)")
         col.progress(pct/100)
 
-    # ── hub-wise RAG table ────────────────────────────
+    # ── hub pivot table with scores ──────────────────
     st.divider()
-    st.subheader("Hub-wise Venture Count")
+    st.subheader("Hub-wise Venture Count & Avg Score")
+    st.caption("Avg Score based on 10-point matrix: Momentum × Investment RAG combination")
+
+    # Build pivot data
+    hub_pivot = {}
+    for v in filtered:
+        h = v["hub"] if v["hub"] not in ["—","Other"] else "Other"
+        m = v["momentum_rag"]
+        if h not in hub_pivot:
+            hub_pivot[h] = {}
+        if m not in hub_pivot[h]:
+            hub_pivot[h][m] = {"count": 0, "scores": []}
+        hub_pivot[h][m]["count"]  += 1
+        hub_pivot[h][m]["scores"].append(v.get("momentum_score", 0))
+
+    # Header
+    ph0,ph1,ph2,ph3,ph4,ph5,ph6 = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
+    ph0.markdown("**Hub**")
+    ph1.markdown("**Sprint Momentum**")
+    ph2.markdown("**Count (X)**")
+    ph3.markdown("**Avg Score**")
+    ph4.markdown("**🟢 Green**")
+    ph5.markdown("**🟡 Amber**")
+    ph6.markdown("**🔴 Red**")
+    st.divider()
+
+    grand_total = 0; grand_scores = []
+    for hub in sorted(hub_pivot.keys()):
+        hub_total = 0; hub_scores_all = []
+        hub_greens = hub_pivot[hub].get("Green",{}).get("count",0)
+        hub_ambers = hub_pivot[hub].get("Amber",{}).get("count",0)
+        hub_reds   = hub_pivot[hub].get("Red",{}).get("count",0)
+
+        for m_rag, data in hub_pivot[hub].items():
+            c0,c1,c2,c3,c4,c5,c6 = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
+            scores = data["scores"]
+            avg    = round(sum(scores)/len(scores),1) if scores else 0.0
+            hub_total   += data["count"]
+            hub_scores_all.extend(scores)
+            grand_scores.extend(scores)
+            
+            c0.markdown(f"**{hub}**" if hub_total == data["count"] else "")
+            c1.markdown(f"{RAG_EMOJI.get(m_rag,'⚪')} {m_rag}")
+            c2.markdown(f"**{data['count']}**")
+            c3.markdown(f"**{avg}**")
+            c4.markdown(f"<span style='color:#16a34a;font-weight:700'>{hub_greens}</span>" if hub_total==data["count"] else "", unsafe_allow_html=True)
+            c5.markdown(f"<span style='color:#d97706;font-weight:700'>{hub_ambers}</span>" if hub_total==data["count"] else "", unsafe_allow_html=True)
+            c6.markdown(f"<span style='color:#dc2626;font-weight:700'>{hub_reds}</span>"   if hub_total==data["count"] else "", unsafe_allow_html=True)
+
+        # Hub total row
+        hub_avg = round(sum(hub_scores_all)/len(hub_scores_all),1) if hub_scores_all else 0.0
+        grand_total += hub_total
+        t0,t1,t2,t3,_,_,_ = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
+        t0.markdown(f"**{hub} Total**")
+        t1.markdown("")
+        t2.markdown(f"**{hub_total}**")
+        t3.markdown(f"**{hub_avg}**")
+        st.divider()
+
+    # Grand total
+    grand_avg = round(sum(grand_scores)/len(grand_scores),1) if grand_scores else 0.0
+    g0,g1,g2,g3,_,_,_ = st.columns([2,1.2,1.2,1.2,1.2,1,1.2])
+    g0.markdown("**Grand Total**")
+    g1.markdown("")
+    g2.markdown(f"**{grand_total}**")
+    g3.markdown(f"**{grand_avg}**")
 
     # Build hub data
     hub_rag = {}
