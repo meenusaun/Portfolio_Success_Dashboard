@@ -514,49 +514,53 @@ Transcript: {tr_text[:400]}
 Growth Journey Report: {growth_journey_text[:600]}
 Common Documents (venture-specific excerpts): {venture_common[:500]}
 """
-    prompt = f"""Analyze this venture data and return ONLY a JSON object with 6 keys:
-- "momentum_rag": one of "Green", "Amber", "Red", "ZERO"
-- "momentum_reason": one sentence explanation (mention attendance and founder engagement)
-- "investment_rag": one of "Green", "Amber", "Red", "ZERO"
-- "investment_reason": one sentence explanation (must reference sprint-specific signals)
-- "momentum_score": integer 0-10 based on scoring matrix below
-- "investment_score": integer 0-10 based on scoring matrix below
+    prompt = f"""You are scoring a venture in an accelerator program. Analyze the data and return ONLY a JSON object with 6 keys.
 
-SPRINT MOMENTUM SCORE DEFINITIONS (use attendance as key signal):
-- Green (score 7-10): Founder ENGAGED, will complete sprint IN LINE with objectives. Active attendance (3+ sessions), positive progress.
-- Amber (score 4-6): Founder engaged BUT sprint running with DELAY. Founder not fully happy. Moderate attendance (1-2 sessions), inconsistent progress.
-- Red (score 1-3): Founder DISENGAGED, sprint UNLIKELY to reach objective. Low/no attendance, no progress.
-- ZERO (score 0): No data available from any source.
+CRITICAL RULES:
+1. Attendance absence does NOT automatically mean Red. A founder with a $68,000 export order is Green even if not in attendance tracker.
+2. Business outcomes (orders won, hires made, investments) are STRONGER signals than attendance.
+3. ZERO means no data available at all — not poor performance. Only use ZERO when there is genuinely NO information.
+4. Score based on EVIDENCE of actions taken, not just engagement frequency.
 
-SELF INVESTMENT SIGNAL DEFINITIONS (MUST be specific to sprint type '{sprint_type}'):
+SPRINT MOMENTUM SCORE:
+- Green: Founder engaged, will complete sprint IN LINE with objectives. Evidence: active on deliverables, positive outcomes, export orders, task completion.
+- Amber: Founder engaged BUT sprint running with DELAY. Founder not fully happy. Evidence: slow progress, inconsistent, needs nudging.
+- Red: Founder DISENGAGED, sprint UNLIKELY to reach objective. Evidence: wants to drop out, not convinced by program, no progress despite time passing.
+- ZERO: No data from any source — genuinely unknown.
+
+SELF INVESTMENT SIGNAL (MUST be specific to sprint type '{sprint_type}'):
+- Green: Founder HAS ALREADY invested in sprint-related resources. Hired staff, bought tools, spent money on sprint goals, likely to self-invest in next sprint.
+- Amber: Founder has NOT YET invested but is LIKELY TO invest in next sprint. Planning, exploring, showing intent.
+- Red: Founder UNSURE, not ready to invest. Waiting for value proof, no commitment signal.
+- ZERO: No data available.
+
+REAL EXAMPLES (learn from these):
+- Kadillac Chemicals: Momentum=Green (purchase order $68K in hand, active), Investment=Green (subscribed to export DB, hired ops staff)
+- Suman Exports: Momentum=Amber (progress but execution gaps), Investment=Green (hired 4 sales professionals, SEO investment)
+- ARGE: Momentum=Red (founder found no value), Investment=ZERO (no data)
+- Shubham Aquavitro: Momentum=Amber (cannot comment on value yet), Investment=ZERO (no data)
+- MIPA Industries: Momentum=Green (9/10 tasks done), Investment=Green (CRM implemented, hired CFO+HR+interns)
+- Hydro Meshines: Momentum=Red (wants to drop out), Investment=Red (unresponsive, wants to exit)
+- Atreya Innovations: Momentum=ZERO (founder missed entire sprint, no data), Investment=ZERO
+- Shree Multi Sticks: Momentum=Green (8/10 tasks, export ready), Investment=Green (₹5Cr plant, ₹10L activities, 8-person team)
+
+NUMERIC SCORING MATRIX:
+Green+Green=10, Green+Amber=8, Green+Red=5, Green+ZERO=5
+Amber+Green=8, Amber+Amber=7, Amber+Red=3, Amber+ZERO=3
+Red+Green=5, Red+Amber=3, Red+Red=1, Red+ZERO=0
+ZERO+Green=5, ZERO+Amber=3, ZERO+ZERO=0
+
 {sprint_investment_guide}
-- ZERO (score 0): No data available.
 
-NUMERIC SCORING MATRIX (use this to pick exact score):
-- Momentum Green + Investment Green = 10
-- Momentum Green + Investment Amber = 8
-- Momentum Green + Investment Red   = 5
-- Momentum Green + Investment ZERO  = 5
-- Momentum Amber + Investment Green = 8
-- Momentum Amber + Investment Amber = 7
-- Momentum Amber + Investment Red   = 3
-- Momentum Amber + Investment ZERO  = 3
-- Momentum Red   + Investment Green = 5
-- Momentum Red   + Investment Amber = 3
-- Momentum Red   + Investment Red   = 1
-- Momentum Red   + Investment ZERO  = 0
-- Momentum ZERO  + Investment Green = 5
-- Momentum ZERO  + Investment Amber = 3
-- Momentum ZERO  + Investment ZERO  = 0
-
-Venture data:
+Venture data to score:
 {combined}
 
-Return ONLY the JSON object, no other text."""
+Return ONLY this JSON, no other text:
+{{"momentum_rag": "Green/Amber/Red/ZERO", "momentum_reason": "one sentence", "investment_rag": "Green/Amber/Red/ZERO", "investment_reason": "one sentence referencing sprint type", "momentum_score": 0, "investment_score": 0}}"""
 
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=400,
+            model="claude-sonnet-4-5", max_tokens=500,
             messages=[{"role":"user","content":prompt}])
         raw = re.sub(r"```json|```","",resp.content[0].text.strip()).strip()
         data = json.loads(raw)
