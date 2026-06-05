@@ -966,7 +966,7 @@ with tab_ventures:
         with st.expander(f"**{vname}**  ·  {hub}  ·  {bucket}"):
 
             # ── sub-tabs ─────────────────────────────
-            tab1, tab2, tab3, tab4 = st.tabs(["📋 Basic Details", "🎙 Sessions", "✦ Success Signals", "🤖 AI Insights"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Basic Details", "🎙 Sessions", "✦ Success Signals", "🤖 AI Insights", "🔍 Data Sources"])
 
             # TAB 1: Basic Details
             with tab1:
@@ -1074,3 +1074,74 @@ INVESTMENT RAG: Green/Amber/Red — one sentence reason."""}])
                                         st.write(line)
                             except Exception as e:
                                 st.error(f"AI error: {e}")
+
+            # TAB 5: Data Sources
+            with tab5:
+                st.markdown("#### All data sources read for this venture")
+                st.caption("This shows exactly what the app found and used for RAG scoring")
+                st.divider()
+
+                # Source 1: Notes column
+                st.markdown("**📊 Source 1: Notes/Comments (Excel Dashboard)**")
+                if notes and notes not in ["—", ""]:
+                    st.info(notes)
+                    if "$68" in notes or "68,000" in notes or "68000" in notes:
+                        st.success("✅ $68K export order mentioned here")
+                else:
+                    st.warning("No notes found in Excel for this venture")
+
+                # Source 2: Venture folder files
+                st.markdown("**📁 Source 2: Venture Folder Files**")
+                if vfiles:
+                    for ftype, fpath in vfiles.items():
+                        st.caption(f"Found: `{ftype}` → `{Path(str(fpath)).name}`")
+                    if fb_text:
+                        with st.expander("📋 Feedback file content"):
+                            st.text(fb_text[:2000])
+                            if "$68" in fb_text or "68,000" in fb_text:
+                                st.success("✅ $68K export order mentioned here")
+                    if tr_text:
+                        with st.expander("🎙 Transcript file content"):
+                            st.text(tr_text[:2000])
+                            if "$68" in tr_text or "68,000" in tr_text:
+                                st.success("✅ $68K export order mentioned here")
+                    if sp_text:
+                        with st.expander("📌 Sprint Plan file content"):
+                            st.text(sp_text[:2000])
+                else:
+                    st.warning("No files found in venture folder on SharePoint")
+
+                # Source 3: Growth Journey Report
+                st.markdown("**📈 Source 3: Growth Journey Report**")
+                if journey_text:
+                    with st.expander("View Growth Journey content"):
+                        st.text(journey_text[:2000])
+                        if "$68" in journey_text or "68,000" in journey_text:
+                            st.success("✅ $68K export order mentioned here")
+                else:
+                    st.warning("No Growth Journey Report found")
+
+                # Source 4: Common Documents
+                st.markdown("**📂 Source 4: Common Documents (venture-specific sections)**")
+                common_text_cached = load_common_docs()
+                venture_common_preview = extract_venture_from_common(vname, common_text_cached)
+                if venture_common_preview:
+                    with st.expander("View Common Documents excerpt"):
+                        st.text(venture_common_preview[:3000])
+                        if "$68" in venture_common_preview or "68,000" in venture_common_preview:
+                            st.success("✅ $68K export order mentioned here")
+                else:
+                    st.warning(f"No sections mentioning '{vname}' found in Common Documents")
+
+                # Source 5: Attendance
+                st.markdown("**📋 Source 5: Attendance Data**")
+                sp_id_att = id(sp_reader) if sp_reader else 0
+                att_data_preview = load_attendance_data(sp_id_att, use_sp, root_path)
+                att_preview = get_attendance_for_venture(vname, att_data_preview)
+                if att_preview:
+                    st.success(f"✅ Found: {att_preview['sessions']} sessions — dates: {', '.join(att_preview['dates'])}")
+                else:
+                    st.warning("No attendance record found for this venture")
+
+                st.divider()
+                st.caption("💡 If $68K order is not showing above in any source, add it to the Notes column in your Excel or Common Documents for accurate scoring.")
