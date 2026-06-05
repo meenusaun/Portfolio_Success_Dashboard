@@ -705,7 +705,7 @@ def rag_badge(rag):
     return f'<span class="{css}">{emoji} {rag}</span>'
 
 # ── top navigation tabs ──────────────────────────────
-tab_overview, tab_ventures, tab_process = st.tabs(["📊  Portfolio Overview", "🏢  Venture Cards", "⚙️  Process Batches"])
+tab_process, tab_overview, tab_ventures = st.tabs(["⚙️  Process Batches", "📊  Portfolio Overview", "🏢  Venture Cards"])
 
 # ══════════════════════════════════════════════════════
 #  VIEW 1: PORTFOLIO OVERVIEW
@@ -1390,22 +1390,18 @@ with tab_process:
     # ── batch controls ────────────────────────────────
     st.subheader("Run Batches")
 
-    # Calculate batches
+    # Calculate batches — Excel data only, instant
     batches = []
     for i in range(0, total, BATCH_SIZE):
         batch_ventures = ventures_raw[i:i+BATCH_SIZE]
         done_in_batch  = sum(1 for v in batch_ventures if batch_results.get(v,{}).get("status") == "done")
         batches.append({
-            "num":       len(batches)+1,
-            "ventures":  batch_ventures,
-            "done":      done_in_batch,
-            "total":     len(batch_ventures),
-            "complete":  done_in_batch == len(batch_ventures)
+            "num":      len(batches)+1,
+            "ventures": batch_ventures,
+            "done":     done_in_batch,
+            "total":    len(batch_ventures),
+            "complete": done_in_batch == len(batch_ventures)
         })
-
-    # Load attendance once
-    sp_id_b        = id(sp_reader) if sp_reader else 0
-    attendance_b   = load_attendance_data(sp_id_b, use_sp, root_path)
 
     col_run_all, col_clear_all = st.columns([2,1])
     run_all   = col_run_all.button("🚀 Run All Batches", help="Process all ventures sequentially")
@@ -1440,6 +1436,14 @@ with tab_process:
             run_batch = st.button(f"▶ Run Batch {batch['num']}", key=f"run_batch_{batch['num']}")
 
             if run_batch or (run_all and not batch["complete"]):
+                # Load attendance once per run (lazy)
+                att_cache_key = "batch_attendance"
+                if att_cache_key not in st.session_state:
+                    with st.spinner("Loading attendance data..."):
+                        sp_id_b = id(sp_reader) if sp_reader else 0
+                        st.session_state[att_cache_key] = load_attendance_data(sp_id_b, use_sp, root_path)
+                attendance_b = st.session_state[att_cache_key]
+
                 prog_b = st.progress(0, text=f"Starting batch {batch['num']}...")
                 for vi, vname_b in enumerate(batch["ventures"]):
                     if batch_results.get(vname_b,{}).get("status") == "done":
