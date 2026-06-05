@@ -705,7 +705,7 @@ def rag_badge(rag):
     return f'<span class="{css}">{emoji} {rag}</span>'
 
 # ── top navigation tabs ──────────────────────────────
-tab_overview, tab_ventures = st.tabs(["📊  Portfolio Overview", "🏢  Venture Cards"])
+tab_overview, tab_ventures, tab_process = st.tabs(["📊  Portfolio Overview", "🏢  Venture Cards", "⚙️  Process Batches"])
 
 # ══════════════════════════════════════════════════════
 #  VIEW 1: PORTFOLIO OVERVIEW
@@ -1109,158 +1109,142 @@ with tab_ventures:
             with tab3:
                 st.caption("Sources: Notes · All Venture Files · Common Documents (venture-specific sections only)")
 
-                sig_cache_key = f"signals_{vname}"
+                sig_cache_key  = f"signals_{vname}"
+                sig_trigger_key = f"sig_trigger_{vname}"
+
                 col_btn, col_clear = st.columns([2,1])
-                get_pressed   = col_btn.button("🔍 Get All Signals", key=f"get_sig_{vname}",
-                                               help="Reads ALL documents — no character limits, drops irrelevant content")
-                clear_pressed = col_clear.button("🗑 Clear", key=f"clr_sig_{vname}")
 
-                if clear_pressed:
+                if col_btn.button("🔍 Get All Signals", key=f"get_sig_{vname}",
+                                   help="Reads ALL documents — chunked, no limits"):
+                    st.session_state[sig_trigger_key] = True
                     st.session_state.pop(sig_cache_key, None)
-                    st.rerun()
 
-                if get_pressed:
+                if col_clear.button("🗑 Clear", key=f"clr_sig_{vname}"):
                     st.session_state.pop(sig_cache_key, None)
-                    with st.spinner(f"🤖 Reading all documents for {vname}..."):
-                        try:
-                            # Load all files lazily
-                            docs          = get_venture_files()
-                            venture_common= get_venture_common()
+                    st.session_state.pop(sig_trigger_key, None)
 
-                            full_sources = {
-                                "Notes":          notes or "",
-                                "Feedback":       docs["fb"],
-                                "Transcript":     docs["tr"],
-                                "Sprint Plan":    docs["sp"],
-                                "Growth Journey": docs["jour"],
-                                "Common Docs":    venture_common,
-                            }
-                            for idx_o, ot in enumerate(docs["others"]):
-                                full_sources[f"Venture File {idx_o+1}"] = ot
+                # Run extraction if triggered
+                if st.session_state.get(sig_trigger_key) and sig_cache_key not in st.session_state:
+                    st.session_state.pop(sig_trigger_key, None)
 
-                            # Show what was found before sending to Claude
-                            found_sources = {k:v for k,v in full_sources.items() if v}
-                            st.caption(f"📄 Sources found: {', '.join(found_sources.keys())}")
-                            total_chars = sum(len(v) for v in found_sources.values())
-                            st.caption(f"📊 Total content: {total_chars:,} characters across {len(found_sources)} sources")
+                    # Load all files
+                    docs           = get_venture_files()
+                    venture_common = get_venture_common()
 
-                            full_combined = "\n\n".join(
-                                f"=== {src} ===\n{txt}"
-                                for src, txt in full_sources.items() if txt
-                            )
+                    full_sources = {
+                        "Notes":          notes or "",
+                        "Feedback":       docs["fb"],
+                        "Transcript":     docs["tr"],
+                        "Sprint Plan":    docs["sp"],
+                        "Growth Journey": docs["jour"],
+                        "Common Docs":    venture_common,
+                    }
+                    for idx_o, ot in enumerate(docs["others"]):
+                        full_sources[f"Venture File {idx_o+1}"] = ot
 
-                            if client:
-                                CHUNK_SIZE = 120000  # safe Claude limit per call
-                                chunks = []
-                                if len(full_combined) <= CHUNK_SIZE:
-                                    chunks = [full_combined]
-                                else:
-                                    # Split at file boundaries where possible
-                                    parts = full_combined.split("\n\n=== ")
-                                    current_chunk = ""
-                                    for part in parts:
-                                        section = part if part.startswith("===") else "=== " + part
-                                        if len(current_chunk) + len(section) > CHUNK_SIZE:
-                                            if current_chunk:
-                                                chunks.append(current_chunk)
-                                            current_chunk = section
-                                        else:
-                                            current_chunk += "\n\n" + section if current_chunk else section
-                                    if current_chunk:
-                                        chunks.append(current_chunk)
+                    found_sources = {k:v for k,v in full_sources.items() if v}
+                    total_chars   = sum(len(v) for v in found_sources.values())
+                    st.info(f"📄 Sources: {', '.join(found_sources.keys())}  |  📊 {total_chars:,} chars total")
 
-                                total_chunks = len(chunks)
-                                st.caption(f"🔄 Processing {total_chunks} chunk(s) — {len(full_combined):,} total chars")
+                    full_combined = "\n\n".join(
+                        f"=== {src} ===\n{txt}"
+                        for src, txt in full_sources.items() if txt
+                    )
 
-                                SIGNAL_PROMPT = """Venture: {vname} | Sprint: {sprint}
-Chunk {chunk_num} of {total_chunks}
+                    CHUNK_SIZE = 120000
+                    if len(full_combined) <= CHUNK_SIZE:
+                        chunks = [full_combined]
+                    else:
+                        parts = full_combined.split("\n\n=== ")
+                        current_chunk = ""
+                        chunks = []
+                        for part in parts:
+                            section = part if part.startswith("===") else "=== " + part
+                            if len(current_chunk) + len(section) > CHUNK_SIZE:
+                                if current_chunk: chunks.append(current_chunk)
+                                current_chunk = section
+                            else:
+                                current_chunk += ("\n\n" + section if current_chunk else section)
+                        if current_chunk: chunks.append(current_chunk)
 
-Extract ALL signals into TWO categories:
-SPRINT MOMENTUM SIGNALS: founder engagement, attendance, task completion, orders, milestones, progress.
-SELF INVESTMENT SIGNALS: money spent, staff hired, tools/subscriptions, new markets, capital invested, self-funded activities specific to sprint '{sprint}'.
+                    st.info(f"🔄 {len(chunks)} chunk(s) to process")
 
-Format EXACTLY:
-MOMENTUM: [type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
-INVESTMENT: [type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
+                    result     = {"momentum": [], "investment": []}
+                    seen_sigs  = set()
+                    PROMPT_TPL = """Venture: {vname} | Sprint: {sprint} | Chunk {n} of {total}
 
-Be THOROUGH. Every signal counts.
-If none found: MOMENTUM: None found
+Extract ALL signals into TWO categories from the text below.
 
---- DOCUMENTS (chunk {chunk_num}/{total_chunks}) ---
+SPRINT MOMENTUM SIGNALS: attendance, task completion, export orders, progress, founder engagement, milestones, positive feedback.
+SELF INVESTMENT SIGNALS: money spent, staff hired, tools/subscriptions bought, new markets entered, capital invested, self-funded activities — specific to sprint type '{sprint}'.
+
+Use EXACTLY this format per signal (one per line):
+MOMENTUM: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name]
+INVESTMENT: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name]
+
+Be THOROUGH. If none in a category write: MOMENTUM: None found
+
+--- DOCUMENTS ---
 {text}"""
 
-                                result = {"momentum": [], "investment": []}
-                                seen_signals = set()  # deduplicate across chunks
+                    if client:
+                        for ci, chunk in enumerate(chunks):
+                            with st.spinner(f"🤖 Chunk {ci+1}/{len(chunks)}..."):
+                                try:
+                                    resp = client.messages.create(
+                                        model="claude-sonnet-4-5", max_tokens=2000,
+                                        messages=[{"role":"user","content":
+                                            PROMPT_TPL.format(vname=vname, sprint=sprint,
+                                                              n=ci+1, total=len(chunks),
+                                                              text=chunk)}])
+                                    for line in resp.content[0].text.splitlines():
+                                        line = line.strip()
+                                        if line.startswith("MOMENTUM:") and "None" not in line:
+                                            parts = [p.strip() for p in line.split("|")]
+                                            t = parts[0].replace("MOMENTUM:","").strip()
+                                            e = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                                            s = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                                            dk = f"m_{t}_{e[:40]}"
+                                            if dk not in seen_sigs:
+                                                seen_sigs.add(dk)
+                                                result["momentum"].append({"type":t,"evidence":e,"source":s})
+                                        elif line.startswith("INVESTMENT:") and "None" not in line:
+                                            parts = [p.strip() for p in line.split("|")]
+                                            t = parts[0].replace("INVESTMENT:","").strip()
+                                            e = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                                            s = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                                            dk = f"i_{t}_{e[:40]}"
+                                            if dk not in seen_sigs:
+                                                seen_sigs.add(dk)
+                                                result["investment"].append({"type":t,"evidence":e,"source":s})
+                                except Exception as ce:
+                                    st.warning(f"Chunk {ci+1} error: {ce}")
 
-                                for chunk_idx, chunk_text in enumerate(chunks):
-                                    with st.spinner(f"🤖 Analysing chunk {chunk_idx+1}/{total_chunks}..."):
-                                        try:
-                                            prompt = SIGNAL_PROMPT.format(
-                                                vname=vname, sprint=sprint,
-                                                chunk_num=chunk_idx+1,
-                                                total_chunks=total_chunks,
-                                                text=chunk_text
-                                            )
-                                            resp = client.messages.create(
-                                                model="claude-sonnet-4-5", max_tokens=2000,
-                                                messages=[{"role":"user","content": prompt}])
+                        st.session_state[sig_cache_key] = result
+                        st.success(f"✅ Done — {len(result['momentum'])} momentum + {len(result['investment'])} investment signals found")
+                    else:
+                        st.warning("No API key — add ANTHROPIC_API_KEY to Streamlit secrets.")
 
-                                            for line in resp.content[0].text.splitlines():
-                                                line = line.strip()
-                                                if line.startswith("MOMENTUM:") and "None" not in line:
-                                                    parts = [p.strip() for p in line.split("|")]
-                                                    sig_type = parts[0].replace("MOMENTUM:","").strip()
-                                                    evidence = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                                                    source   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
-                                                    dedup_key = f"m_{sig_type}_{evidence[:50]}"
-                                                    if dedup_key not in seen_signals:
-                                                        seen_signals.add(dedup_key)
-                                                        result["momentum"].append({"type":sig_type,"evidence":evidence,"source":source})
-                                                elif line.startswith("INVESTMENT:") and "None" not in line:
-                                                    parts = [p.strip() for p in line.split("|")]
-                                                    sig_type = parts[0].replace("INVESTMENT:","").strip()
-                                                    evidence = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                                                    source   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
-                                                    dedup_key = f"i_{sig_type}_{evidence[:50]}"
-                                                    if dedup_key not in seen_signals:
-                                                        seen_signals.add(dedup_key)
-                                                        result["investment"].append({"type":sig_type,"evidence":evidence,"source":source})
-                                        except Exception as chunk_err:
-                                            st.warning(f"Chunk {chunk_idx+1} error: {chunk_err}")
-
-                                st.session_state[sig_cache_key] = result
-                                st.caption(f"✅ Found {len(result['momentum'])} momentum + {len(result['investment'])} investment signals")
-                            else:
-                                st.warning("No API key — add ANTHROPIC_API_KEY to enable signal extraction.")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-
+                # Display results
                 if sig_cache_key in st.session_state:
                     cached_sigs = st.session_state[sig_cache_key]
                     st.divider()
-
                     st.markdown("### 📈 Sprint Momentum Signals")
                     m_sigs = cached_sigs.get("momentum", [])
                     if m_sigs:
                         for s in m_sigs:
-                            st.markdown(f"**✦ {s['type']}**  <small style='color:#6b7280'>({s.get('source','')})</small>",
-                                        unsafe_allow_html=True)
-                            if s.get("evidence"):
-                                st.markdown(f"> *{s['evidence']}*")
+                            st.markdown(f"**✦ {s['type']}**  <small style='color:#6b7280'>({s.get('source','')})</small>", unsafe_allow_html=True)
+                            if s.get("evidence"): st.markdown(f"> *{s['evidence']}*")
                             st.markdown("")
                     else:
                         st.info("No momentum signals found.")
-
                     st.divider()
-
                     st.markdown("### 💰 Self Investment Signals")
                     i_sigs = cached_sigs.get("investment", [])
                     if i_sigs:
                         for s in i_sigs:
-                            st.markdown(f"**✦ {s['type']}**  <small style='color:#6b7280'>({s.get('source','')})</small>",
-                                        unsafe_allow_html=True)
-                            if s.get("evidence"):
-                                st.markdown(f"> *{s['evidence']}*")
+                            st.markdown(f"**✦ {s['type']}**  <small style='color:#6b7280'>({s.get('source','')})</small>", unsafe_allow_html=True)
+                            if s.get("evidence"): st.markdown(f"> *{s['evidence']}*")
                             st.markdown("")
                     else:
                         st.info("No investment signals found.")
@@ -1367,3 +1351,166 @@ INVESTMENT RAG: Green/Amber/Red — one sentence reason."""}])
 
                 st.divider()
                 st.caption("💡 If $68K order is not showing above in any source, add it to the Notes column in your Excel or Common Documents for accurate scoring.")
+
+# ══════════════════════════════════════════════════════
+#  PROCESS BATCHES TAB
+# ══════════════════════════════════════════════════════
+with tab_process:
+    st.title("⚙️ Process Batches")
+    st.caption("Read all documents per venture, extract signals, score RAG accurately. Run once, view dashboard instantly.")
+    st.divider()
+
+    from processor import process_venture
+
+    BATCH_RESULTS_KEY = "batch_results"
+    BATCH_SIZE        = 10
+
+    # ── status overview ───────────────────────────────
+    batch_results = st.session_state.get(BATCH_RESULTS_KEY, {})
+    done_count    = sum(1 for v in batch_results.values() if v.get("status") == "done")
+    error_count   = sum(1 for v in batch_results.values() if v.get("status") == "error")
+    total         = len(ventures_raw)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Ventures",  total)
+    c2.metric("✅ Processed",    done_count)
+    c3.metric("❌ Errors",       error_count)
+    c4.metric("⏳ Remaining",    total - done_count - error_count)
+
+    # Overall progress bar
+    if total > 0:
+        st.progress(done_count / total, text=f"{done_count}/{total} ventures processed")
+
+    st.divider()
+
+    if not client:
+        st.warning("⚠️ Add ANTHROPIC_API_KEY to Streamlit secrets to enable batch processing.")
+        st.stop()
+
+    # ── batch controls ────────────────────────────────
+    st.subheader("Run Batches")
+
+    # Calculate batches
+    batches = []
+    for i in range(0, total, BATCH_SIZE):
+        batch_ventures = ventures_raw[i:i+BATCH_SIZE]
+        done_in_batch  = sum(1 for v in batch_ventures if batch_results.get(v,{}).get("status") == "done")
+        batches.append({
+            "num":       len(batches)+1,
+            "ventures":  batch_ventures,
+            "done":      done_in_batch,
+            "total":     len(batch_ventures),
+            "complete":  done_in_batch == len(batch_ventures)
+        })
+
+    # Load attendance once
+    sp_id_b        = id(sp_reader) if sp_reader else 0
+    attendance_b   = load_attendance_data(sp_id_b, use_sp, root_path)
+
+    col_run_all, col_clear_all = st.columns([2,1])
+    run_all   = col_run_all.button("🚀 Run All Batches", help="Process all ventures sequentially")
+    clear_all = col_clear_all.button("🗑 Clear All Results", help="Reset all batch results")
+
+    if clear_all:
+        st.session_state.pop(BATCH_RESULTS_KEY, None)
+        st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Show each batch
+    for batch in batches:
+        status_icon = "✅" if batch["complete"] else ("⏳" if batch["done"] > 0 else "⬜")
+        with st.expander(f"{status_icon} Batch {batch['num']}  —  {batch['done']}/{batch['total']} done  —  {', '.join(batch['ventures'][:3])}{'...' if len(batch['ventures'])>3 else ''}"):
+
+            # Show venture status in batch
+            for vname_b in batch["ventures"]:
+                vr = batch_results.get(vname_b, {})
+                vs = vr.get("status","pending")
+                icon = {"done":"✅","error":"❌","processing":"🔄"}.get(vs,"⬜")
+                if vs == "done":
+                    rag  = vr.get("rag",{})
+                    nsig = len(vr.get("signals",{}).get("momentum",[])) + len(vr.get("signals",{}).get("investment",[]))
+                    st.caption(f"{icon} {vname_b}  ·  Overall: {RAG_EMOJI.get(rag.get('overall_rag',''),'⚪')} {rag.get('overall_rag','')}  ·  {nsig} signals  ·  {vr.get('total_chars',0):,} chars  ·  {vr.get('num_chunks',1)} chunk(s)")
+                elif vs == "error":
+                    st.caption(f"{icon} {vname_b}  ·  Error: {vr.get('error','')[:80]}")
+                else:
+                    st.caption(f"{icon} {vname_b}  ·  Not processed yet")
+
+            st.markdown("")
+            run_batch = st.button(f"▶ Run Batch {batch['num']}", key=f"run_batch_{batch['num']}")
+
+            if run_batch or (run_all and not batch["complete"]):
+                prog_b = st.progress(0, text=f"Starting batch {batch['num']}...")
+                for vi, vname_b in enumerate(batch["ventures"]):
+                    if batch_results.get(vname_b,{}).get("status") == "done":
+                        prog_b.progress((vi+1)/len(batch["ventures"]),
+                                        text=f"Skipping {vname_b} (already done)")
+                        continue
+
+                    prog_b.progress(vi/len(batch["ventures"]),
+                                    text=f"Processing {vname_b} ({vi+1}/{len(batch['ventures'])})...")
+
+                    row    = get_row(vname_b)
+                    notes  = cv(row, col_notes, default="")
+                    sprint = cv(row, col_sprint)
+                    pct    = row[col_pct] if (row is not None and col_pct) else None
+
+                    result = process_venture(
+                        client       = client,
+                        vname        = vname_b,
+                        venture_data = {},
+                        load_v_files_fn    = load_v_files,
+                        get_text_fn        = get_text,
+                        extract_common_fn  = extract_venture_from_common,
+                        load_common_fn     = load_common_docs,
+                        get_attendance_fn  = get_attendance_for_venture,
+                        attendance_data    = attendance_b,
+                        notes        = notes,
+                        sprint       = sprint,
+                        pct_raw      = pct,
+                    )
+
+                    if BATCH_RESULTS_KEY not in st.session_state:
+                        st.session_state[BATCH_RESULTS_KEY] = {}
+                    st.session_state[BATCH_RESULTS_KEY][vname_b] = result
+
+                prog_b.progress(1.0, text=f"✅ Batch {batch['num']} complete!")
+                st.rerun()
+
+    # ── sync batch results to portfolio RAG cache ─────
+    if done_count > 0:
+        st.divider()
+        st.subheader("📊 Sync to Dashboard")
+        st.caption("Push batch results to Portfolio Overview and Venture Cards")
+
+        if st.button("🔄 Sync Results to Dashboard"):
+            rag_cache = []
+            for vname_b, vr in batch_results.items():
+                if vr.get("status") != "done": continue
+                row    = get_row(vname_b)
+                rag    = vr.get("rag",{})
+                rag_cache.append({
+                    "name":             vname_b,
+                    "hub":              cv(row, col_hub),
+                    "vp":               cv(row, col_vp) if col_vp else "—",
+                    "sprint":           cv(row, col_sprint),
+                    "rev":              cv(row, col_rev),
+                    "bucket":           get_stage_bucket(row[col_pct] if (row is not None and col_pct) else None),
+                    "pct_raw":          row[col_pct] if (row is not None and col_pct) else None,
+                    "notes":            cv(row, col_notes, default=""),
+                    "overall_rag":      rag.get("overall_rag","ZERO"),
+                    "momentum_rag":     rag.get("momentum_rag","ZERO"),
+                    "investment_rag":   rag.get("investment_rag","ZERO"),
+                    "momentum_reason":  rag.get("momentum_reason","—"),
+                    "investment_reason":rag.get("investment_reason","—"),
+                    "momentum_score":   rag.get("momentum_score",0),
+                    "investment_score": rag.get("investment_score",0),
+                })
+            st.session_state["rag_scores_ai"] = rag_cache
+
+            # Also cache signals per venture
+            for vname_b, vr in batch_results.items():
+                if vr.get("status") == "done" and vr.get("signals"):
+                    st.session_state[f"signals_{vname_b}"] = vr["signals"]
+
+            st.success(f"✅ Synced {len(rag_cache)} ventures to dashboard! Go to 📊 Portfolio Overview to view results.")
