@@ -1453,13 +1453,24 @@ with tab_process:
             run_batch = st.button(f"▶ Run Batch {batch['num']}", key=f"run_batch_{batch['num']}")
 
             if run_batch or (run_all and not batch["complete"]):
-                # Load attendance once per run (lazy)
-                att_cache_key = "batch_attendance"
+                # Load attendance + common docs ONCE per batch — not per venture
+                att_cache_key    = "batch_attendance"
+                common_cache_key = "batch_common_docs"
+
                 if att_cache_key not in st.session_state:
-                    with st.spinner("Loading attendance data..."):
+                    with st.spinner("📋 Loading attendance data..."):
                         sp_id_b = id(sp_reader) if sp_reader else 0
                         st.session_state[att_cache_key] = load_attendance_data(sp_id_b, use_sp, root_path)
                 attendance_b = st.session_state[att_cache_key]
+
+                if common_cache_key not in st.session_state:
+                    with st.spinner("📂 Loading Common Documents (once for all ventures)..."):
+                        st.session_state[common_cache_key] = load_common_docs()
+                common_docs_b = st.session_state[common_cache_key]
+
+                # Pre-extract venture sections from common docs for all ventures in batch
+                def load_common_preloaded():
+                    return common_docs_b
 
                 prog_b = st.progress(0, text=f"Starting batch {batch['num']}...")
                 for vi, vname_b in enumerate(batch["ventures"]):
@@ -1483,7 +1494,7 @@ with tab_process:
                         load_v_files_fn    = load_v_files,
                         get_text_fn        = get_text,
                         extract_common_fn  = extract_venture_from_common,
-                        load_common_fn     = load_common_docs,
+                        load_common_fn     = load_common_preloaded,
                         get_attendance_fn  = get_attendance_for_venture,
                         attendance_data    = attendance_b,
                         notes        = notes,
