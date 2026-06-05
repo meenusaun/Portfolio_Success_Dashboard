@@ -597,11 +597,11 @@ Venture: {vname}
 Sprint Type: {sprint_type or 'Unknown'}
 Sprint Completion: {pct:.0f}%
 Attendance (last 2 months): {att_summary}
-Program Notes/Remarks: {notes[:3000]}
-Session Feedback: {fb_text[:3000]}
-Transcript: {tr_text[:3000]}
-Growth Journey Report: {growth_journey_text[:3000]}
-Common Documents (venture-specific excerpts): {venture_common[:5000]}
+Program Notes/Remarks: {notes}
+Session Feedback: {fb_text}
+Transcript: {tr_text}
+Growth Journey Report: {growth_journey_text}
+Common Documents (venture-specific excerpts): {venture_common}
 """
     prompt = f"""You are scoring a venture in an accelerator program. Analyze the data and return ONLY a JSON object with 6 keys.
 
@@ -1138,50 +1138,98 @@ with tab_ventures:
                             for idx_o, ot in enumerate(docs["others"]):
                                 full_sources[f"Venture File {idx_o+1}"] = ot
 
+                            # Show what was found before sending to Claude
+                            found_sources = {k:v for k,v in full_sources.items() if v}
+                            st.caption(f"📄 Sources found: {', '.join(found_sources.keys())}")
+                            total_chars = sum(len(v) for v in found_sources.values())
+                            st.caption(f"📊 Total content: {total_chars:,} characters across {len(found_sources)} sources")
+
                             full_combined = "\n\n".join(
                                 f"=== {src} ===\n{txt}"
                                 for src, txt in full_sources.items() if txt
                             )
 
                             if client:
-                                resp = client.messages.create(
-                                    model="claude-sonnet-4-5", max_tokens=2000,
-                                    messages=[{"role":"user","content":
-                                        f"""Venture: {vname} | Sprint Type: {sprint}
+                                CHUNK_SIZE = 120000  # safe Claude limit per call
+                                chunks = []
+                                if len(full_combined) <= CHUNK_SIZE:
+                                    chunks = [full_combined]
+                                else:
+                                    # Split at file boundaries where possible
+                                    parts = full_combined.split("\n\n=== ")
+                                    current_chunk = ""
+                                    for part in parts:
+                                        section = part if part.startswith("===") else "=== " + part
+                                        if len(current_chunk) + len(section) > CHUNK_SIZE:
+                                            if current_chunk:
+                                                chunks.append(current_chunk)
+                                            current_chunk = section
+                                        else:
+                                            current_chunk += "\n\n" + section if current_chunk else section
+                                    if current_chunk:
+                                        chunks.append(current_chunk)
+
+                                total_chunks = len(chunks)
+                                st.caption(f"🔄 Processing {total_chunks} chunk(s) — {len(full_combined):,} total chars")
+
+                                SIGNAL_PROMPT = """Venture: {vname} | Sprint: {sprint}
+Chunk {chunk_num} of {total_chunks}
 
 Extract ALL signals into TWO categories:
+SPRINT MOMENTUM SIGNALS: founder engagement, attendance, task completion, orders, milestones, progress.
+SELF INVESTMENT SIGNALS: money spent, staff hired, tools/subscriptions, new markets, capital invested, self-funded activities specific to sprint '{sprint}'.
 
-SPRINT MOMENTUM SIGNALS: founder engagement, session attendance, task completion, export orders, milestones, positive feedback, progress.
-SELF INVESTMENT SIGNALS: money spent, staff hired, tools/subscriptions, new markets, capital invested, self-funded activities specific to sprint type '{sprint}'.
-
-Use EXACTLY this format per signal:
+Format EXACTLY:
 MOMENTUM: [type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
 INVESTMENT: [type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
 
-Be THOROUGH. Find every signal. No character limits.
-If none in a category: MOMENTUM: None found
+Be THOROUGH. Every signal counts.
+If none found: MOMENTUM: None found
 
---- ALL DOCUMENTS ---
-{full_combined[:150000]}"""}])
+--- DOCUMENTS (chunk {chunk_num}/{total_chunks}) ---
+{text}"""
 
-                                result = {{"momentum": [], "investment": []}}
-                                for line in resp.content[0].text.splitlines():
-                                    line = line.strip()
-                                    if line.startswith("MOMENTUM:") and "None" not in line:
-                                        parts = [p.strip() for p in line.split("|")]
-                                        result["momentum"].append({{
-                                            "type":     parts[0].replace("MOMENTUM:","").strip(),
-                                            "evidence": parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else "",
-                                            "source":   parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else "",
-                                        }})
-                                    elif line.startswith("INVESTMENT:") and "None" not in line:
-                                        parts = [p.strip() for p in line.split("|")]
-                                        result["investment"].append({{
-                                            "type":     parts[0].replace("INVESTMENT:","").strip(),
-                                            "evidence": parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else "",
-                                            "source":   parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else "",
-                                        }})
+                                result = {"momentum": [], "investment": []}
+                                seen_signals = set()  # deduplicate across chunks
+
+                                for chunk_idx, chunk_text in enumerate(chunks):
+                                    with st.spinner(f"🤖 Analysing chunk {chunk_idx+1}/{total_chunks}..."):
+                                        try:
+                                            prompt = SIGNAL_PROMPT.format(
+                                                vname=vname, sprint=sprint,
+                                                chunk_num=chunk_idx+1,
+                                                total_chunks=total_chunks,
+                                                text=chunk_text
+                                            )
+                                            resp = client.messages.create(
+                                                model="claude-sonnet-4-5", max_tokens=2000,
+                                                messages=[{"role":"user","content": prompt}])
+
+                                            for line in resp.content[0].text.splitlines():
+                                                line = line.strip()
+                                                if line.startswith("MOMENTUM:") and "None" not in line:
+                                                    parts = [p.strip() for p in line.split("|")]
+                                                    sig_type = parts[0].replace("MOMENTUM:","").strip()
+                                                    evidence = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                                                    source   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                                                    dedup_key = f"m_{sig_type}_{evidence[:50]}"
+                                                    if dedup_key not in seen_signals:
+                                                        seen_signals.add(dedup_key)
+                                                        result["momentum"].append({"type":sig_type,"evidence":evidence,"source":source})
+                                                elif line.startswith("INVESTMENT:") and "None" not in line:
+                                                    parts = [p.strip() for p in line.split("|")]
+                                                    sig_type = parts[0].replace("INVESTMENT:","").strip()
+                                                    evidence = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                                                    source   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                                                    dedup_key = f"i_{sig_type}_{evidence[:50]}"
+                                                    if dedup_key not in seen_signals:
+                                                        seen_signals.add(dedup_key)
+                                                        result["investment"].append({"type":sig_type,"evidence":evidence,"source":source})
+                                        except Exception as chunk_err:
+                                            st.warning(f"Chunk {chunk_idx+1} error: {chunk_err}")
+
                                 st.session_state[sig_cache_key] = result
+                                st.caption(f"✅ Found {len(result['momentum'])} momentum + {len(result['investment'])} investment signals")
                             else:
                                 st.warning("No API key — add ANTHROPIC_API_KEY to enable signal extraction.")
                         except Exception as e:
@@ -1237,7 +1285,7 @@ Hub: {hub} | Sprint: {sprint} | Completion: {pct_num:.0f}%
 Notes: {notes}
 Feedback: {docs['fb']}
 Transcript: {docs['tr']}
-Common Docs: {vc[:3000]}
+Common Docs: {vc}
 
 Provide a concise analysis in plain text (no markdown headers, no # symbols).
 Use these section labels followed by a colon:
