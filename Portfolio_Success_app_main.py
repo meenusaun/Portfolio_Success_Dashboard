@@ -130,14 +130,14 @@ def extract_text_local(fpath):
         fp = safe_copy(fpath)
         if ext in [".xlsx",".xls"]:
             xl = pd.ExcelFile(fp)
-            return "\n".join(pd.read_excel(fp,sheet_name=s,header=None).fillna("").astype(str).to_string() for s in xl.sheet_names)[:20000]
+            return "\n".join(pd.read_excel(fp,sheet_name=s,header=None).fillna("").astype(str).to_string() for s in xl.sheet_names)
         elif ext == ".docx":
             from docx import Document
-            return "\n".join(p.text for p in Document(fp).paragraphs)[:20000]
+            return "\n".join(p.text for p in Document(fp).paragraphs)
         elif ext == ".pdf":
             import pdfplumber
             with pdfplumber.open(fp) as pdf:
-                return "\n".join(p.extract_text() or "" for p in pdf.pages)[:20000]
+                return "\n".join(p.extract_text() or "" for p in pdf.pages)
     except Exception as e: return f"[Error: {e}]"
     return ""
 
@@ -1244,6 +1244,46 @@ Be THOROUGH. If none in a category write: MOMENTUM: None found
 
                         st.session_state[sig_cache_key] = result
                         st.success(f"✅ Done — {len(result['momentum'])} momentum + {len(result['investment'])} investment signals found")
+
+                        # ── Re-score RAG from signals (always in sync) ──
+                        with st.spinner("🎯 Re-scoring RAG from complete signals..."):
+                            from processor import score_rag_from_signals
+                            att_data_r   = load_attendance_data(id(sp_reader) if sp_reader else 0, use_sp, root_path)
+                            att_r        = get_attendance_for_venture(vname, att_data_r)
+                            att_summary  = f"{att_r['sessions']} sessions ({', '.join(att_r['dates'])})" if att_r else "No attendance data"
+                            new_rag      = score_rag_from_signals(
+                                client, vname, sprint, notes,
+                                att_summary, result, pct_raw)
+
+                        # Update RAG in portfolio cache
+                        rag_cache = st.session_state.get("rag_scores_ai", [])
+                        updated   = False
+                        for v in rag_cache:
+                            if v["name"] == vname:
+                                v.update({
+                                    "momentum_rag":     new_rag["momentum_rag"],
+                                    "investment_rag":   new_rag["investment_rag"],
+                                    "overall_rag":      new_rag["overall_rag"],
+                                    "momentum_reason":  new_rag["momentum_reason"],
+                                    "investment_reason":new_rag["investment_reason"],
+                                    "momentum_score":   new_rag["momentum_score"],
+                                    "investment_score": new_rag["investment_score"],
+                                })
+                                updated = True
+                                break
+                        if not updated:
+                            # Add to cache if not exists
+                            row = get_row(vname)
+                            rag_cache.append({
+                                "name": vname, "hub": cv(row,col_hub),
+                                "vp": cv(row,col_vp) if col_vp else "—",
+                                "sprint": sprint, "rev": cv(row,col_rev),
+                                "bucket": bucket, "pct_raw": pct_raw,
+                                "notes": notes,
+                                **{k: new_rag[k] for k in new_rag}
+                            })
+                        st.session_state["rag_scores_ai"] = rag_cache
+                        st.success(f"🎯 RAG updated: Momentum={new_rag['momentum_rag']} · Investment={new_rag['investment_rag']} · Overall={new_rag['overall_rag']}")
                     else:
                         st.warning("No API key — add ANTHROPIC_API_KEY to Streamlit secrets.")
 
@@ -1379,12 +1419,12 @@ INVESTMENT RAG: Green/Amber/Red — one sentence reason."""}])
 # ══════════════════════════════════════════════════════
 with tab_process:
     st.title("⚙️ Process Batches")
-    st.caption("Read all documents per venture, extract signals, score RAG accurately. Run once, view dashboard instantly.")
+    st.caption("Step 1: Download all data once. Step 2: Run batches. Step 3: Sync to dashboard.")
     st.divider()
 
     from processor import process_venture
 
-    BATCH_SIZE = 10
+    BATCH_SIZE  = 10
     error_count = sum(1 for v in batch_results.values() if v.get("status") == "error")
     total       = len(ventures_raw)
 
@@ -1394,7 +1434,6 @@ with tab_process:
     c3.metric("❌ Errors",       error_count)
     c4.metric("⏳ Remaining",    total - done_count - error_count)
 
-    # Overall progress bar
     if total > 0:
         st.progress(done_count / total, text=f"{done_count}/{total} ventures processed")
 
@@ -1404,10 +1443,52 @@ with tab_process:
         st.warning("⚠️ Add ANTHROPIC_API_KEY to Streamlit secrets to enable batch processing.")
         st.stop()
 
-    # ── batch controls ────────────────────────────────
-    st.subheader("Run Batches")
+    # ── STEP 1: Download all data once ───────────────
+    st.subheader("Step 1 — Download Data")
+    st.caption("Download Common Documents and Attendance once for all batches. No repeated downloads.")
 
-    # Calculate batches — Excel data only, instant
+    att_cache_key    = "batch_attendance"
+    common_cache_key = "batch_common_docs"
+
+    att_loaded    = att_cache_key    in st.session_state
+    common_loaded = common_cache_key in st.session_state
+
+    dl_col1, dl_col2, dl_col3 = st.columns([2,2,1])
+    dl_col1.markdown(f"{'✅' if att_loaded    else '⬜'} **Attendance Data**  {f'— {len(st.session_state[att_cache_key])} ventures' if att_loaded else ''}")
+    dl_col2.markdown(f"{'✅' if common_loaded else '⬜'} **Common Documents** {f'— {len(st.session_state[common_cache_key]):,} chars' if common_loaded else ''}")
+
+    if dl_col3.button("⬇️ Download", key="download_all_data",
+                       disabled=(att_loaded and common_loaded)):
+        with st.spinner("📋 Loading attendance data..."):
+            sp_id_b = id(sp_reader) if sp_reader else 0
+            st.session_state[att_cache_key] = load_attendance_data(sp_id_b, use_sp, root_path)
+
+        with st.spinner("📂 Loading Common Documents (all files, all sub-folders)..."):
+            st.session_state[common_cache_key] = load_common_docs()
+
+        st.success(f"✅ Downloaded! Attendance: {len(st.session_state[att_cache_key])} ventures · Common Docs: {len(st.session_state[common_cache_key]):,} chars")
+        st.rerun()
+
+    if att_loaded and common_loaded:
+        st.success("✅ All data downloaded — ready to run batches")
+    else:
+        st.info("👆 Click Download before running batches")
+        if not (att_loaded and common_loaded):
+            st.stop()
+
+    # Use pre-loaded data for all batches
+    attendance_b  = st.session_state[att_cache_key]
+    common_docs_b = st.session_state[common_cache_key]
+
+    def load_common_preloaded():
+        return common_docs_b
+
+    st.divider()
+
+    # ── STEP 2: Run Batches ───────────────────────────
+    st.subheader("Step 2 — Run Batches")
+
+    # Calculate batches
     batches = []
     for i in range(0, total, BATCH_SIZE):
         batch_ventures = ventures_raw[i:i+BATCH_SIZE]
@@ -1453,25 +1534,6 @@ with tab_process:
             run_batch = st.button(f"▶ Run Batch {batch['num']}", key=f"run_batch_{batch['num']}")
 
             if run_batch or (run_all and not batch["complete"]):
-                # Load attendance + common docs ONCE per batch — not per venture
-                att_cache_key    = "batch_attendance"
-                common_cache_key = "batch_common_docs"
-
-                if att_cache_key not in st.session_state:
-                    with st.spinner("📋 Loading attendance data..."):
-                        sp_id_b = id(sp_reader) if sp_reader else 0
-                        st.session_state[att_cache_key] = load_attendance_data(sp_id_b, use_sp, root_path)
-                attendance_b = st.session_state[att_cache_key]
-
-                if common_cache_key not in st.session_state:
-                    with st.spinner("📂 Loading Common Documents (once for all ventures)..."):
-                        st.session_state[common_cache_key] = load_common_docs()
-                common_docs_b = st.session_state[common_cache_key]
-
-                # Pre-extract venture sections from common docs for all ventures in batch
-                def load_common_preloaded():
-                    return common_docs_b
-
                 prog_b = st.progress(0, text=f"Starting batch {batch['num']}...")
                 for vi, vname_b in enumerate(batch["ventures"]):
                     if batch_results.get(vname_b,{}).get("status") == "done":
@@ -1512,7 +1574,7 @@ with tab_process:
     # ── sync batch results to portfolio RAG cache ─────
     if done_count > 0:
         st.divider()
-        st.subheader("📊 Sync to Dashboard")
+        st.subheader("Step 3 — Sync to Dashboard")
         st.caption("Push batch results to Portfolio Overview and Venture Cards")
 
         if st.button("🔄 Sync Results to Dashboard"):

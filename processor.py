@@ -1,15 +1,15 @@
 """
 Batch processor for Portfolio Success Dashboard
-Processes ventures in batches, reads all documents, scores RAG
+Processes ventures in batches, reads all documents, extracts signals, scores RAG
+NO character limitations — full chunking support
 """
-import json, re, os, tempfile
+import json, re
 from pathlib import Path
-from anthropic import Anthropic
 
-CHUNK_SIZE = 120000  # safe Claude API limit per call
+CHUNK_SIZE = 120000  # Claude API hard limit per call
 
 def chunk_text(text, size=CHUNK_SIZE):
-    """Split text at file boundaries."""
+    """Split at file boundaries — never cuts a file in the middle."""
     if len(text) <= size:
         return [text]
     parts   = text.split("\n\n=== ")
@@ -26,26 +26,44 @@ def chunk_text(text, size=CHUNK_SIZE):
     return chunks
 
 def extract_signals_from_text(client, vname, sprint, full_text):
-    """Extract signals from full_text using chunking."""
-    chunks  = chunk_text(full_text)
-    result  = {"momentum": [], "investment": []}
-    seen    = set()
+    """
+    Extract ALL signals from full_text using chunking.
+    Each chunk is processed independently — results merged and deduplicated.
+    No character limit — processes documents of any size.
+    """
+    chunks = chunk_text(full_text)
+    result = {"momentum": [], "investment": []}
+    seen   = set()
 
-    PROMPT = """Venture: {vname} | Sprint: {sprint} | Chunk {n}/{total}
+    PROMPT = """Venture: {vname} | Sprint Type: {sprint} | Chunk {n} of {total}
 
-Extract ALL signals into TWO categories:
+Extract ALL signals from the text below into TWO categories:
 
-SPRINT MOMENTUM SIGNALS: attendance, task completion, orders won, milestones, positive feedback, founder engagement, progress on sprint goals.
-SELF INVESTMENT SIGNALS: money spent, staff hired, tools/subscriptions, new markets entered, capital invested, self-funded activities specific to sprint '{sprint}'.
+SPRINT MOMENTUM SIGNALS — evidence of founder engagement and sprint progress:
+- Session attendance / meetings attended
+- Tasks completed or milestones achieved  
+- Export orders / deals / contracts won
+- Positive founder engagement or feedback
+- Progress toward sprint objectives
+- Any evidence the sprint is on track
 
-Format EXACTLY (one per line):
-MOMENTUM: [signal type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
-INVESTMENT: [signal type] | EVIDENCE: [exact quote] | SOURCE: [doc name]
+SELF INVESTMENT SIGNALS — evidence of money/resources committed, SPECIFIC to sprint type '{sprint}':
+- Staff hired (especially sprint-relevant roles)
+- Equipment / tools / software purchased
+- Capital invested in sprint-related activities
+- Self-funded sprint continuation
+- New market entry or channel established
+- Any concrete financial commitment to growth
 
-Be THOROUGH. Find every signal including subtle ones.
-If none in a category: MOMENTUM: None found
+Format EXACTLY (one signal per line):
+MOMENTUM: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name]
+INVESTMENT: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name]
 
---- DOCUMENTS ---
+IMPORTANT: Be THOROUGH. Find EVERY signal, including subtle ones.
+Do NOT miss signals just because they are indirect or implied.
+If genuinely none in a category: MOMENTUM: None found
+
+--- DOCUMENTS (Chunk {n}/{total}) ---
 {text}"""
 
     for i, chunk in enumerate(chunks):
@@ -59,100 +77,130 @@ If none in a category: MOMENTUM: None found
                 line = line.strip()
                 if line.startswith("MOMENTUM:") and "None" not in line:
                     parts = [p.strip() for p in line.split("|")]
-                    t = parts[0].replace("MOMENTUM:","").strip()
-                    e = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                    s = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                    t  = parts[0].replace("MOMENTUM:","").strip()
+                    e  = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                    s  = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
                     dk = f"m_{t}_{e[:40]}"
                     if dk not in seen:
                         seen.add(dk)
                         result["momentum"].append({"type":t,"evidence":e,"source":s})
                 elif line.startswith("INVESTMENT:") and "None" not in line:
                     parts = [p.strip() for p in line.split("|")]
-                    t = parts[0].replace("INVESTMENT:","").strip()
-                    e = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                    s = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                    t  = parts[0].replace("INVESTMENT:","").strip()
+                    e  = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                    s  = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
                     dk = f"i_{t}_{e[:40]}"
                     if dk not in seen:
                         seen.add(dk)
                         result["investment"].append({"type":t,"evidence":e,"source":s})
         except Exception as e:
-            result["errors"] = result.get("errors",[]) + [f"Chunk {i+1}: {e}"]
+            result.setdefault("errors",[]).append(f"Chunk {i+1}: {e}")
 
     return result, len(chunks)
 
+
 def score_rag_from_signals(client, vname, sprint, notes, att_summary,
                             signals, pct_raw):
-    """Score RAG using full signals extracted from all documents."""
+    """
+    Score RAG using COMPLETE signals extracted from ALL documents.
+    This is always in sync with signals — same data, same result.
+    """
     try:
         pct = float(str(pct_raw).replace("%","").strip())
         if pct <= 1: pct *= 100
     except: pct = 0
 
-    m_sigs = "\n".join(f"- {s['type']}: {s['evidence']}" for s in signals.get("momentum",[]))
-    i_sigs = "\n".join(f"- {s['type']}: {s['evidence']}" for s in signals.get("investment",[]))
+    m_count = len(signals.get("momentum",[]))
+    i_count = len(signals.get("investment",[]))
+    m_sigs  = "\n".join(f"  - {s['type']}: {s['evidence']}"
+                        for s in signals.get("momentum",[]))
+    i_sigs  = "\n".join(f"  - {s['type']}: {s['evidence']}"
+                        for s in signals.get("investment",[]))
 
-    prompt = f"""Score this venture's RAG based on ALL signals extracted from their documents.
+    prompt = f"""You are scoring a venture in an accelerator program.
+Score based ONLY on the signals extracted from ALL their documents below.
 
 Venture: {vname} | Sprint: {sprint} | Completion: {pct:.0f}%
 Attendance: {att_summary}
 Notes: {notes}
 
-MOMENTUM SIGNALS FOUND:
-{m_sigs or "None"}
+MOMENTUM SIGNALS FOUND ({m_count} total):
+{m_sigs or "  None found"}
 
-INVESTMENT SIGNALS FOUND:
-{i_sigs or "None"}
+INVESTMENT SIGNALS FOUND ({i_count} total):
+{i_sigs or "  None found"}
 
-SCORING RULES:
-Sprint Momentum:
-- Green: Founder engaged, completing sprint objectives. Strong signals of progress.
-- Amber: Some progress but delayed. Inconsistent engagement.
-- Red: Founder disengaged, sprint unlikely to complete.
-- ZERO: No data at all.
+SCORING RULES — read carefully:
 
-Self Investment (specific to sprint '{sprint}'):
-- Green: Already invested sprint-related resources (hired, bought tools, spent money).
-- Amber: Plans to invest, showing intent but not yet committed.
+Sprint Momentum RAG:
+- Green: Founder ENGAGED, completing sprint objectives. Multiple positive signals.
+  Strong evidence = orders won, tasks done, active engagement, positive progress.
+- Amber: Some progress but DELAYED or INCONSISTENT. Mixed signals.
+- Red: Founder DISENGAGED, sprint unlikely to reach objective. No progress signals.
+- ZERO: Genuinely no data from any source.
+
+CRITICAL: If there are MULTIPLE strong momentum signals (orders, tasks, engagement),
+score MUST be Green. Do not score Amber if strong positive evidence exists.
+
+Self Investment RAG (must be specific to sprint '{sprint}'):
+- Green: Founder HAS ALREADY invested sprint-relevant resources.
+  Strong evidence = hired relevant staff, bought tools, spent money on sprint goals.
+- Amber: Showing INTENT to invest but not yet committed.
 - Red: No investment intent, not ready to commit.
 - ZERO: No data.
 
-Scoring matrix: Green+Green=10, Green+Amber=8, Amber+Amber=7, Red+anything=1-5, ZERO+ZERO=0
+CRITICAL: If investment signals clearly show money spent or staff hired for
+sprint-related goals, score MUST be Green. Do not downgrade without reason.
 
-Return ONLY JSON:
-{{"momentum_rag":"Green/Amber/Red/ZERO","momentum_reason":"one sentence","investment_rag":"Green/Amber/Red/ZERO","investment_reason":"one sentence","momentum_score":0,"investment_score":0}}"""
+Scoring matrix:
+Green+Green=10, Green+Amber=8, Green+Red=5, Green+ZERO=5
+Amber+Green=8, Amber+Amber=7, Amber+Red=3, Amber+ZERO=3
+Red+anything low=1-3, ZERO+ZERO=0
+
+Return ONLY this JSON:
+{{"momentum_rag":"Green/Amber/Red/ZERO",
+  "momentum_reason":"one sentence citing specific signals",
+  "investment_rag":"Green/Amber/Red/ZERO",
+  "investment_reason":"one sentence citing specific sprint-relevant signals",
+  "momentum_score":0,
+  "investment_score":0}}"""
 
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=300,
+            model="claude-sonnet-4-5", max_tokens=400,
             messages=[{"role":"user","content":prompt}])
         raw  = re.sub(r"```json|```","",resp.content[0].text.strip()).strip()
         data = json.loads(raw)
         m    = data.get("momentum_rag","Unknown")
         i    = data.get("investment_rag","Unknown")
-        # Overall = worst of two
         order = {"Red":0,"Amber":1,"Green":2,"ZERO":3,"Unknown":4}
-        scores_present = [x for x in [m,i] if x not in ["ZERO","Unknown"]]
-        overall = min(scores_present, key=lambda x: order.get(x,4)) if scores_present else "ZERO"
+        present = [x for x in [m,i] if x not in ["ZERO","Unknown"]]
+        overall = min(present, key=lambda x: order.get(x,4)) if present else "ZERO"
         return {
-            "momentum_rag":    m,
-            "investment_rag":  i,
-            "overall_rag":     overall,
-            "momentum_reason": data.get("momentum_reason","—"),
+            "momentum_rag":     m,
+            "investment_rag":   i,
+            "overall_rag":      overall,
+            "momentum_reason":  data.get("momentum_reason","—"),
             "investment_reason":data.get("investment_reason","—"),
-            "momentum_score":  data.get("momentum_score",0),
-            "investment_score":data.get("investment_score",0),
+            "momentum_score":   data.get("momentum_score",0),
+            "investment_score": data.get("investment_score",0),
         }
     except Exception as e:
         return {"momentum_rag":"Unknown","investment_rag":"Unknown",
                 "overall_rag":"Unknown","momentum_reason":str(e),
                 "investment_reason":"—","momentum_score":0,"investment_score":0}
 
+
 def process_venture(client, vname, venture_data, load_v_files_fn,
                     get_text_fn, extract_common_fn, load_common_fn,
                     get_attendance_fn, attendance_data, notes, sprint, pct_raw):
-    """Fully process one venture — read all docs, extract signals, score RAG."""
+    """
+    Fully process one venture:
+    1. Read ALL documents (no character limit)
+    2. Extract ALL signals via chunking
+    3. Score RAG from those signals (always in sync)
+    """
     result = {"name": vname, "status": "processing"}
-
     try:
         # 1. Load all venture files
         vfiles = load_v_files_fn(vname)
@@ -163,11 +211,11 @@ def process_venture(client, vname, venture_data, load_v_files_fn,
         others = [get_text_fn(p) for k,p in vfiles.items() if k.startswith("other_")]
         others = [t for t in others if t]
 
-        # 2. Load common docs venture sections
+        # 2. Extract venture sections from pre-loaded common docs
         common_text    = load_common_fn()
         venture_common = extract_common_fn(vname, common_text)
 
-        # 3. Build full combined text
+        # 3. Build full text — NO limits
         sources = {
             "Notes":          notes or "",
             "Feedback":       fb,
@@ -179,9 +227,7 @@ def process_venture(client, vname, venture_data, load_v_files_fn,
         for idx, ot in enumerate(others):
             sources[f"Venture File {idx+1}"] = ot
 
-        full_text = "\n\n".join(
-            f"=== {k} ===\n{v}" for k,v in sources.items() if v
-        )
+        full_text    = "\n\n".join(f"=== {k} ===\n{v}" for k,v in sources.items() if v)
         total_chars  = len(full_text)
         sources_used = [k for k,v in sources.items() if v]
 
@@ -189,31 +235,32 @@ def process_venture(client, vname, venture_data, load_v_files_fn,
         att          = get_attendance_fn(vname, attendance_data)
         att_sessions = att["sessions"]     if att else 0
         att_dates    = att["dates"]        if att else []
-        att_weeks    = att["weeks_active"] if att else 0
         att_summary  = f"{att_sessions} sessions ({', '.join(att_dates)})" if att_sessions else "No attendance data"
 
-        # 5. Extract signals with chunking
+        # 5. Extract ALL signals — chunked, no limit
         signals, num_chunks = extract_signals_from_text(client, vname, sprint, full_text)
 
-        # 6. Score RAG from signals
+        # 6. Score RAG from complete signals — always in sync
         rag = score_rag_from_signals(client, vname, sprint, notes,
                                       att_summary, signals, pct_raw)
 
         result.update({
-            "status":          "done",
-            "signals":         signals,
-            "rag":             rag,
-            "total_chars":     total_chars,
-            "num_chunks":      num_chunks,
-            "sources_used":    sources_used,
-            "att_sessions":    att_sessions,
-            "att_dates":       att_dates,
+            "status":       "done",
+            "signals":      signals,
+            "rag":          rag,
+            "total_chars":  total_chars,
+            "num_chunks":   num_chunks,
+            "sources_used": sources_used,
+            "att_sessions": att_sessions,
+            "att_dates":    att_dates,
         })
 
     except Exception as e:
-        result.update({"status":"error","error":str(e),
-                       "rag":{"momentum_rag":"Unknown","investment_rag":"Unknown",
-                               "overall_rag":"Unknown","momentum_reason":str(e),
-                               "investment_reason":"—","momentum_score":0,"investment_score":0},
-                       "signals":{"momentum":[],"investment":[]}})
+        result.update({
+            "status": "error", "error": str(e),
+            "rag": {"momentum_rag":"Unknown","investment_rag":"Unknown",
+                    "overall_rag":"Unknown","momentum_reason":str(e),
+                    "investment_reason":"—","momentum_score":0,"investment_score":0},
+            "signals": {"momentum":[],"investment":[]}
+        })
     return result
