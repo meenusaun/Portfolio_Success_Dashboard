@@ -191,6 +191,105 @@ Return ONLY this JSON:
                 "investment_reason":"—","momentum_score":0,"investment_score":0}
 
 
+def extract_session_feedback(client, vname, transcript_text, feedback_text):
+    """
+    Extract structured session data from transcript and/or feedback files.
+    Returns a list of session records — one dict per session found.
+    If no data, returns a single record with "Not Available" for all fields.
+    """
+    has_transcript = bool(transcript_text and len(transcript_text.strip()) > 50)
+    has_feedback   = bool(feedback_text   and len(feedback_text.strip())   > 50)
+
+    if not has_transcript and not has_feedback:
+        return [{
+            "mentor_name":     "Not Available",
+            "session_date":    "Not Available",
+            "topics_discussed":"Not Available",
+            "key_outputs":     "Not Available",
+            "founder_feedback":"Not Available",
+            "session_summary": "Not Available",
+            "sources_used":    [],
+        }]
+
+    sources_used = []
+    combined     = ""
+    if has_transcript:
+        sources_used.append("Transcript")
+        combined += f"\n\n=== SESSION TRANSCRIPT ===\n{transcript_text}"
+    if has_feedback:
+        sources_used.append("Feedback")
+        combined += f"\n\n=== FEEDBACK FILE ===\n{feedback_text}"
+
+    # Chunk if needed
+    chunks = chunk_text(combined)
+
+    PROMPT = """You are extracting structured session data for venture: {vname}
+
+From the documents below, extract ALL sessions mentioned. For each session, extract:
+1. Mentor/Advisor Name (who ran the session)
+2. Session Date (any date format found)
+3. Topics Discussed (what was discussed — raw extract)
+4. Key Outputs / Action Items (decisions made, next steps)
+5. Founder Feedback on Mentor/Session (what founder said about the session quality)
+6. Overall Session Summary (2-3 sentence Claude summary of the session)
+
+If any field is missing in the source, write exactly: Not Available
+
+Return ONLY a JSON array. Each element is one session. Example:
+[
+  {{
+    "mentor_name": "Rajesh Kumar",
+    "session_date": "15-Mar-2026",
+    "topics_discussed": "Export documentation, buyer negotiations with Germany client",
+    "key_outputs": "1. Draft proforma invoice by 20 March 2. Follow up with freight forwarder",
+    "founder_feedback": "Very useful session, mentor helped clarify DGFT process",
+    "session_summary": "Session focused on export readiness. Mentor walked through documentation requirements. Founder confirmed next steps on buyer negotiation."
+  }}
+]
+
+If multiple sessions exist, return multiple objects in the array.
+If you cannot identify distinct sessions, return one object for the overall content.
+
+--- DOCUMENTS (Chunk {n}/{total}) ---
+{text}"""
+
+    all_sessions = []
+    seen_sessions = set()
+
+    for i, chunk in enumerate(chunks):
+        try:
+            resp = client.messages.create(
+                model="claude-sonnet-4-5", max_tokens=3000,
+                messages=[{"role":"user","content":
+                    PROMPT.format(vname=vname, n=i+1, total=len(chunks), text=chunk)}])
+            raw = re.sub(r"```json|```","",resp.content[0].text.strip()).strip()
+            sessions = json.loads(raw)
+            if isinstance(sessions, dict): sessions = [sessions]
+            for s in sessions:
+                # Dedup by mentor+date
+                dk = f"{s.get('mentor_name','')}_{s.get('session_date','')}"
+                if dk not in seen_sessions:
+                    seen_sessions.add(dk)
+                    s["sources_used"] = sources_used
+                    all_sessions.append(s)
+        except Exception as e:
+            pass  # If parsing fails, continue with other chunks
+
+    if not all_sessions:
+        # Extraction ran but yielded nothing parseable
+        return [{
+            "mentor_name":     "Not Available",
+            "session_date":    "Not Available",
+            "topics_discussed":"Not Available",
+            "key_outputs":     "Not Available",
+            "founder_feedback":"Not Available",
+            "session_summary": "Could not parse session data from documents.",
+            "sources_used":    sources_used,
+        }]
+
+    return all_sessions
+
+
 def process_venture(client, vname, venture_data, load_v_files_fn,
                     get_text_fn, extract_common_fn, load_common_fn,
                     get_attendance_fn, attendance_data, notes, sprint, pct_raw):
