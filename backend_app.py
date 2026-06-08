@@ -523,17 +523,81 @@ with step1_tab:
     sig_results = st.session_state[SIG_RESULTS_KEY]
     done_sig = sum(1 for v in sig_results.values() if v.get("status") == "done")
 
-    # Pre-load data
-    if run_all_sig or any(
-        st.session_state.get(f"run_sig_batch_{b}", False) for b in range(len(batches))
-    ):
-        with st.spinner("📂 Pre-loading Common Documents..."):
-            common_text_sig = load_common_docs_cached(sp_id, use_sp)
-        with st.spinner("📅 Loading attendance data..."):
-            att_data_sig = load_attendance_cached(sp_id, use_sp)
-    else:
-        common_text_sig = None
-        att_data_sig    = None
+    # ── Step 0: Explicit pre-load (never triggers on page render) ──
+    preload_done = ("common_text_sig" in st.session_state and
+                    "att_data_sig"    in st.session_state)
+
+    if not preload_done:
+        st.info("**Step 0 — Pre-load Common Documents first** before running any batch.")
+        if st.button("📂 Pre-load Common Documents & Attendance", key="preload_btn"):
+            status_box = st.empty()
+            prog_pre   = st.progress(0, text="Scanning Common Documents folder...")
+            file_counter   = [0]
+            texts_collected = []
+
+            def process_file_progress(fname, content_bytes=None):
+                ext = Path(fname).suffix.lower()
+                if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
+                if "journey_accelerate_portfolio" in fname.lower(): return
+                try:
+                    text = extract_text_bytes(content_bytes, fname)
+                    if text and len(text) >= 50:
+                        texts_collected.append(f"=== FILE: {fname} ===\n{text}")
+                        file_counter[0] += 1
+                        status_box.caption(f"📄 Loaded {file_counter[0]} files... latest: {fname[:60]}")
+                except: pass
+
+            if use_sp and ENV_CLIENT_ID:
+                try:
+                    from sharepoint_reader import SharePointReader
+                    sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+                    all_files = []
+                    def collect_files(folder_path):
+                        try:
+                            items = sp_pre.list_folder(folder_path)
+                            for item in items:
+                                iname = item.get("name","")
+                                ipath = f"{folder_path}/{iname}"
+                                if "folder" in item: collect_files(ipath)
+                                elif "file" in item:
+                                    ext = Path(iname).suffix.lower()
+                                    if ext in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]:
+                                        if "journey_accelerate_portfolio" not in iname.lower():
+                                            all_files.append((iname, ipath))
+                        except: pass
+                    collect_files(COMMON_FOLDER)
+                    total_files = len(all_files)
+                    prog_pre.progress(0, text=f"Found {total_files} files — downloading...")
+                    for fi, (fname, fpath) in enumerate(all_files):
+                        prog_pre.progress((fi+1)/max(total_files,1),
+                                          text=f"Reading {fi+1}/{total_files}: {fname[:50]}")
+                        try:
+                            content = sp_pre.download_file(fpath)
+                            process_file_progress(fname, content_bytes=content)
+                        except: pass
+                except Exception as e:
+                    st.error(f"Common docs load error: {e}")
+
+            st.session_state["common_text_sig"] = "\n\n".join(texts_collected)
+            status_box.caption(f"📅 Loading attendance data...")
+            att = load_attendance_cached(sp_id, use_sp)
+            st.session_state["att_data_sig"] = att
+            prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
+            st.success(f"✅ Pre-load complete — {file_counter[0]} Common Document files · {len(att)} attendance records")
+            st.rerun()
+        st.stop()
+
+    # Already pre-loaded
+    common_text_sig = st.session_state["common_text_sig"]
+    att_data_sig    = st.session_state["att_data_sig"]
+
+    cdocs_files = common_text_sig.count("=== FILE:")
+    col_pre1, col_pre2 = st.columns([4,1])
+    col_pre1.success(f"✅ Common Documents loaded — {cdocs_files} files · {len(att_data_sig)} attendance records")
+    if col_pre2.button("🔄 Reload Docs", key="reload_preload"):
+        del st.session_state["common_text_sig"]
+        del st.session_state["att_data_sig"]
+        st.rerun()
 
     for bi, batch in enumerate(batches):
         batch_done = sum(1 for v in batch if sig_results.get(v,{}).get("status") == "done")
@@ -559,10 +623,6 @@ with step1_tab:
             should_run = run_batch_btn or run_all_sig
 
             if should_run:
-                if common_text_sig is None:
-                    common_text_sig = load_common_docs_cached(sp_id, use_sp)
-                if att_data_sig is None:
-                    att_data_sig = load_attendance_cached(sp_id, use_sp)
 
                 prog = st.progress(0, text=f"Starting batch {bi+1}...")
                 for vi, vname in enumerate(batch):
