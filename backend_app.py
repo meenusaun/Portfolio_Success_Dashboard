@@ -29,7 +29,7 @@ ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "nenadmin2026")
 
-SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Session Transcripts"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
@@ -47,27 +47,25 @@ st.set_page_config(
 # ── CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-.stApp { background: #0f1117; color: #e2e8f0; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.stApp { background: #f5f7fa; }
 .main .block-container { padding: 1.5rem 2rem; max-width: 1400px; }
-h1,h2,h3,h4 { color: #f8fafc !important; font-family: 'IBM Plex Mono', monospace !important; }
+h1,h2,h3,h4 { color: #1e293b !important; }
 .stProgress > div > div { background: #6366f1 !important; }
-section[data-testid="stSidebar"] { background: #1e2130 !important; border-right: 1px solid #2d3148; }
-section[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
-div[data-testid="stMetricValue"] { color: #f8fafc !important; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
-.stExpander { background: #1e2130 !important; border: 1px solid #2d3148 !important; border-radius: 8px; margin-bottom: 6px; }
-.stExpander summary { color: #e2e8f0 !important; }
+section[data-testid="stSidebar"] { background: #ffffff !important; border-right: 1px solid #e2e8f0; }
+section[data-testid="stSidebar"] * { color: #1e293b !important; }
+div[data-testid="stMetricValue"] { color: #1e293b !important; font-weight: 700; }
+div[data-testid="stMetricLabel"] { font-size: 0.82rem; color: #64748b; }
+.stExpander { background: #ffffff; border: 1px solid #e2e8f0 !important; border-radius: 10px; margin-bottom: 8px; }
 .stButton > button { background: #6366f1 !important; color: white !important; border: none !important; border-radius: 6px !important; font-weight: 600; }
 .stButton > button:hover { background: #4f46e5 !important; }
-.stTextInput > div > input { background: #1e2130 !important; color: #e2e8f0 !important; border: 1px solid #2d3148 !important; }
-.stSelectbox > div > div { background: #1e2130 !important; color: #e2e8f0 !important; }
-.admin-badge { background: #7c3aed; color: white; padding: 3px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.05em; }
-.rag-green { background:#14532d; color:#86efac; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
-.rag-amber { background:#713f12; color:#fde68a; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
-.rag-red   { background:#7f1d1d; color:#fca5a5; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
-.rag-zero  { background:#1e293b; color:#94a3b8; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
-.status-box { background: #1e2130; border: 1px solid #2d3148; border-radius: 8px; padding: 12px 16px; margin: 8px 0; font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem; }
+.admin-badge { background: #7c3aed; color: white; padding: 3px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; }
+.rag-green { background:#dcfce7; color:#166534; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
+.rag-amber { background:#fef9c3; color:#854d0e; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
+.rag-red   { background:#fee2e2; color:#991b1b; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
+.rag-zero  { background:#f1f5f9; color:#64748b; padding:3px 10px; border-radius:20px; font-weight:700; font-size:0.82rem; }
+.status-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin: 8px 0; font-size: 0.82rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,12 +76,12 @@ def check_admin():
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         st.markdown("""
-        <div style='text-align:center;padding:40px 30px;background:#1e2130;
-        border-radius:16px;border:1px solid #2d3148;'>
+        <div style='text-align:center;padding:40px 30px;background:#ffffff;
+        border-radius:16px;border:1px solid #e2e8f0;box-shadow:0 4px 24px rgba(0,0,0,0.06)'>
             <div style='font-size:2rem;margin-bottom:8px'>⚙️</div>
-            <div style='font-size:1.2rem;font-weight:700;color:#f8fafc;margin-bottom:4px;
-            font-family:IBM Plex Mono,monospace'>Knowledge Repository Generator</div>
-            <div style='font-size:0.82rem;color:#64748b;margin-bottom:4px'>
+            <div style='font-size:1.2rem;font-weight:700;color:#1e293b;margin-bottom:4px'>
+                Knowledge Repository Generator</div>
+            <div style='font-size:0.82rem;color:#64748b;margin-bottom:12px'>
                 NEN Accelerate · Admin Access Only</div>
             <span class='admin-badge'>BACKEND</span>
         </div>""", unsafe_allow_html=True)
@@ -108,8 +106,7 @@ st.markdown("""
 <div style='display:flex;align-items:center;gap:14px;margin-bottom:8px'>
     <div style='font-size:1.8rem'>⚙️</div>
     <div>
-        <div style='font-size:1.3rem;font-weight:700;color:#f8fafc;
-        font-family:IBM Plex Mono,monospace'>Knowledge Repository Generator</div>
+        <div style='font-size:1.3rem;font-weight:700;color:#1e293b'>Knowledge Repository Generator</div>
         <div style='font-size:0.8rem;color:#64748b'>
             NEN Accelerate · Admin · Generates signals_repository.json + feedback_repository.json
         </div>
