@@ -263,16 +263,77 @@ with st.spinner("Loading Knowledge Repositories from SharePoint..."):
     signals_repo, sig_err  = load_signals_repo(sp_id, use_sp)
     feedback_repo, fb_err  = load_feedback_repo(sp_id, use_sp)
 
+# ── RAG formula (mirrors processor.py — single source of truth) ───
+def _rag_from_polarity_count(signals_list):
+    """
+    >= 70% POSITIVE → Green
+    40-69% POSITIVE → Amber
+    <  40% POSITIVE → Red
+    0 signals       → ZERO
+    """
+    if not signals_list:
+        return "ZERO", 0, 0, 0
+    pos = sum(1 for s in signals_list if s.get("polarity","POSITIVE") == "POSITIVE")
+    neg = len(signals_list) - pos
+    pct = round(pos / len(signals_list) * 100)
+    if pct >= 70:   rag = "Green"
+    elif pct >= 40: rag = "Amber"
+    else:           rag = "Red"
+    return rag, pos, neg, pct
+
+def compute_rag_from_signals(signals):
+    """Compute full RAG dict live from a signals dict {momentum:[...], investment:[...]}"""
+    m_sigs = signals.get("momentum",  [])
+    i_sigs = signals.get("investment", [])
+    m_rag, m_pos, m_neg, m_pct = _rag_from_polarity_count(m_sigs)
+    i_rag, i_pos, i_neg, i_pct = _rag_from_polarity_count(i_sigs)
+
+    order   = {"Red": 0, "Amber": 1, "Green": 2, "ZERO": 3}
+    present = [r for r in [m_rag, i_rag] if r != "ZERO"]
+    overall = min(present, key=lambda x: order.get(x, 3)) if present else "ZERO"
+
+    score_matrix = {
+        ("Green","Green"):10, ("Green","Amber"):8, ("Green","Red"):5, ("Green","ZERO"):5,
+        ("Amber","Green"):8,  ("Amber","Amber"):7, ("Amber","Red"):3, ("Amber","ZERO"):3,
+        ("Red",  "Green"):5,  ("Red",  "Amber"):3, ("Red",  "Red"):1, ("Red",  "ZERO"):0,
+        ("ZERO", "Green"):5,  ("ZERO", "Amber"):3, ("ZERO", "Red"):0, ("ZERO", "ZERO"):0,
+    }
+    score = score_matrix.get((m_rag, i_rag), 0)
+
+    def _reason(rag, pos, neg, pct, cat):
+        if rag == "ZERO": return f"No {cat} signals found."
+        return f"{pos}/{pos+neg} signals positive ({pct}%) → {rag}. {neg} negative signal(s)."
+
+    return {
+        "overall_rag":       overall,
+        "momentum_rag":      m_rag,
+        "investment_rag":    i_rag,
+        "momentum_reason":   _reason(m_rag, m_pos, m_neg, m_pct, "momentum"),
+        "investment_reason": _reason(i_rag, i_pos, i_neg, i_pct, "investment"),
+        "momentum_score":    score,
+        "investment_score":  score,
+        "momentum_positive": m_pos,
+        "momentum_negative": m_neg,
+        "momentum_pct":      m_pct,
+        "investment_positive": i_pos,
+        "investment_negative": i_neg,
+        "investment_pct":      i_pct,
+    }
+
 # ── parse repositories into lookups ───────────────────
-venture_rag      = {}  # {vname: {overall_rag, momentum_rag, investment_rag, ...}}
+venture_rag      = {}  # {vname: rag dict computed live from signals}
 venture_signals  = {}  # {vname: {momentum: [...], investment: [...]}}
 venture_feedback = {}  # {vname: [session_dicts]}
 
 if signals_repo:
     vsummary = signals_repo.get("venture_summary", {})
     for vn, vdata in vsummary.items():
-        venture_rag[vn]     = vdata
-        venture_signals[vn] = vdata.get("signals", {"momentum":[], "investment":[]})
+        signals = vdata.get("signals", {"momentum":[], "investment":[]})
+        venture_signals[vn] = signals
+        # Always compute RAG live from signals — keeps RAG Score tab and Signals tab in sync
+        live_rag = compute_rag_from_signals(signals)
+        # Carry over non-RAG fields (hub, vp, sprint, sources, processed_at etc.)
+        venture_rag[vn] = {**vdata, **live_rag}
 
 if feedback_repo:
     for vn, vdata in feedback_repo.get("ventures", {}).items():
