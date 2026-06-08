@@ -673,22 +673,44 @@ with tab_ventures:
                         unsafe_allow_html=True
                     )
                 with rag2:
+                    m_pos = rag_data.get("momentum_positive", 0)
+                    m_neg = rag_data.get("momentum_negative", 0)
+                    m_pct = rag_data.get("momentum_pct", 0)
+                    m_total = m_pos + m_neg
                     st.markdown(
                         f"<div class='info-card'>"
                         f"<div class='section-label'>Sprint Momentum</div>"
                         f"<div style='margin-bottom:8px'>{rag_badge(m_rag)}</div>"
-                        f"<div style='font-size:0.82rem;color:#475569'>{m_reason}</div>"
-                        f"<div style='margin-top:10px;font-size:0.78rem;color:#94a3b8'>Score: {m_score}/10</div>"
+                        f"<div style='font-size:0.82rem;color:#475569;margin-bottom:10px'>{m_reason}</div>"
+                        f"<div style='display:flex;gap:12px;font-size:0.78rem'>"
+                        f"<span style='color:#16a34a;font-weight:600'>✅ {m_pos} positive</span>"
+                        f"<span style='color:#dc2626;font-weight:600'>❌ {m_neg} negative</span>"
+                        f"</div>"
+                        f"<div style='margin-top:6px;background:#f1f5f9;border-radius:6px;height:6px;overflow:hidden'>"
+                        f"<div style='background:#16a34a;height:100%;width:{m_pct}%'></div></div>"
+                        f"<div style='font-size:0.72rem;color:#94a3b8;margin-top:4px'>{m_pct}% positive of {m_total} signals</div>"
+                        f"<div style='margin-top:8px;font-size:0.78rem;color:#94a3b8'>Score: {m_score}/10</div>"
                         f"</div>",
                         unsafe_allow_html=True
                     )
                 with rag3:
+                    i_pos = rag_data.get("investment_positive", 0)
+                    i_neg = rag_data.get("investment_negative", 0)
+                    i_pct = rag_data.get("investment_pct", 0)
+                    i_total = i_pos + i_neg
                     st.markdown(
                         f"<div class='info-card'>"
                         f"<div class='section-label'>Self Investment</div>"
                         f"<div style='margin-bottom:8px'>{rag_badge(i_rag)}</div>"
-                        f"<div style='font-size:0.82rem;color:#475569'>{i_reason}</div>"
-                        f"<div style='margin-top:10px;font-size:0.78rem;color:#94a3b8'>Score: {i_score}/10</div>"
+                        f"<div style='font-size:0.82rem;color:#475569;margin-bottom:10px'>{i_reason}</div>"
+                        f"<div style='display:flex;gap:12px;font-size:0.78rem'>"
+                        f"<span style='color:#16a34a;font-weight:600'>✅ {i_pos} positive</span>"
+                        f"<span style='color:#dc2626;font-weight:600'>❌ {i_neg} negative</span>"
+                        f"</div>"
+                        f"<div style='margin-top:6px;background:#f1f5f9;border-radius:6px;height:6px;overflow:hidden'>"
+                        f"<div style='background:#16a34a;height:100%;width:{i_pct}%'></div></div>"
+                        f"<div style='font-size:0.72rem;color:#94a3b8;margin-top:4px'>{i_pct}% positive of {i_total} signals</div>"
+                        f"<div style='margin-top:8px;font-size:0.78rem;color:#94a3b8'>Score: {i_score}/10</div>"
                         f"</div>",
                         unsafe_allow_html=True
                     )

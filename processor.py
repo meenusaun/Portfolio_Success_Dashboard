@@ -28,7 +28,7 @@ def chunk_text(text, size=CHUNK_SIZE):
 def extract_signals_from_text(client, vname, sprint, full_text):
     """
     Extract ALL signals from full_text using chunking.
-    Each chunk is processed independently — results merged and deduplicated.
+    Each signal is labelled POSITIVE or NEGATIVE by Claude at extraction time.
     No character limit — processes documents of any size.
     """
     chunks = chunk_text(full_text)
@@ -37,30 +37,35 @@ def extract_signals_from_text(client, vname, sprint, full_text):
 
     PROMPT = """Venture: {vname} | Sprint Type: {sprint} | Chunk {n} of {total}
 
-Extract ALL signals from the text below into TWO categories:
+Extract ALL signals from the text below into TWO categories.
+For EACH signal, judge whether it is POSITIVE or NEGATIVE based on context.
+
+POLARITY RULES:
+- POSITIVE momentum: founder engaged, tasks done, orders won, progress made, attendance confirmed, active participation
+- NEGATIVE momentum: founder disengaged, dropped out, no progress, missing sessions, wants to exit, sprint stalled
+- POSITIVE investment: staff hired, money spent, equipment bought, new market entered, self-funded activity, concrete commitment made
+- NEGATIVE investment: no investment intent, not ready to commit, unsure about value, withdrawing resources
 
 SPRINT MOMENTUM SIGNALS — evidence of founder engagement and sprint progress:
 - Session attendance / meetings attended
-- Tasks completed or milestones achieved  
+- Tasks completed or milestones achieved
 - Export orders / deals / contracts won
-- Positive founder engagement or feedback
-- Progress toward sprint objectives
-- Any evidence the sprint is on track
+- Positive or negative founder engagement
+- Progress or lack of progress toward sprint objectives
 
-SELF INVESTMENT SIGNALS — evidence of money/resources committed, SPECIFIC to sprint type '{sprint}':
-- Staff hired (especially sprint-relevant roles)
-- Equipment / tools / software purchased
-- Capital invested in sprint-related activities
-- Self-funded sprint continuation
+SELF INVESTMENT SIGNALS — evidence of resources committed or withheld, SPECIFIC to sprint type '{sprint}':
+- Staff hired or not hired for sprint-relevant roles
+- Equipment / tools / software purchased or not
+- Capital invested or withheld
 - New market entry or channel established
-- Any concrete financial commitment to growth
+- Any concrete financial commitment or refusal
 
 Format EXACTLY (one signal per line):
-MOMENTUM: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name]
-INVESTMENT: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name]
+MOMENTUM: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name] | POLARITY: POSITIVE
+INVESTMENT: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name] | POLARITY: NEGATIVE
 
-IMPORTANT: Be THOROUGH. Find EVERY signal, including subtle ones.
-Do NOT miss signals just because they are indirect or implied.
+IMPORTANT: Be THOROUGH. Find EVERY signal including negative ones.
+Do NOT skip negative signals — they are equally important.
 If genuinely none in a category: MOMENTUM: None found
 
 --- DOCUMENTS (Chunk {n}/{total}) ---
@@ -80,115 +85,124 @@ If genuinely none in a category: MOMENTUM: None found
                     t  = parts[0].replace("MOMENTUM:","").strip()
                     e  = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
                     s  = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                    pol= parts[3].replace("POLARITY:","").strip().upper() if len(parts)>3 else "POSITIVE"
+                    if pol not in ["POSITIVE","NEGATIVE"]: pol = "POSITIVE"
                     dk = f"m_{t}_{e[:40]}"
                     if dk not in seen:
                         seen.add(dk)
-                        result["momentum"].append({"type":t,"evidence":e,"source":s})
+                        result["momentum"].append({"type":t,"evidence":e,"source":s,"polarity":pol})
                 elif line.startswith("INVESTMENT:") and "None" not in line:
                     parts = [p.strip() for p in line.split("|")]
                     t  = parts[0].replace("INVESTMENT:","").strip()
                     e  = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
                     s  = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                    pol= parts[3].replace("POLARITY:","").strip().upper() if len(parts)>3 else "POSITIVE"
+                    if pol not in ["POSITIVE","NEGATIVE"]: pol = "POSITIVE"
                     dk = f"i_{t}_{e[:40]}"
                     if dk not in seen:
                         seen.add(dk)
-                        result["investment"].append({"type":t,"evidence":e,"source":s})
+                        result["investment"].append({"type":t,"evidence":e,"source":s,"polarity":pol})
         except Exception as e:
             result.setdefault("errors",[]).append(f"Chunk {i+1}: {e}")
 
     return result, len(chunks)
 
 
+def _rag_from_polarity_count(signals_list):
+    """
+    Calculate RAG from polarity-labelled signals using threshold formula:
+      >= 70% POSITIVE  → Green
+      40–69% POSITIVE  → Amber
+      < 40%  POSITIVE  → Red
+      0 signals        → ZERO
+    Returns (rag, positive_count, negative_count, positive_pct)
+    """
+    if not signals_list:
+        return "ZERO", 0, 0, 0
+
+    pos = sum(1 for s in signals_list if s.get("polarity","POSITIVE") == "POSITIVE")
+    neg = len(signals_list) - pos
+    pct = round(pos / len(signals_list) * 100)
+
+    if pct >= 70:   rag = "Green"
+    elif pct >= 40: rag = "Amber"
+    else:           rag = "Red"
+
+    return rag, pos, neg, pct
+
+
 def score_rag_from_signals(client, vname, sprint, notes, att_summary,
                             signals, pct_raw):
     """
-    Score RAG using COMPLETE signals extracted from ALL documents.
-    This is always in sync with signals — same data, same result.
+    Score RAG purely from polarity-labelled signals — no separate Claude call.
+
+    Formula per category:
+      >= 70% POSITIVE signals → Green
+      40–69% POSITIVE signals → Amber
+      <  40% POSITIVE signals → Red
+      0 signals               → ZERO
+
+    Overall RAG = worst of Momentum + Investment
+    (ZERO is treated as no-data, not worst — so Green+ZERO = Green)
     """
-    try:
-        pct = float(str(pct_raw).replace("%","").strip())
-        if pct <= 1: pct *= 100
-    except: pct = 0
+    m_sigs = signals.get("momentum",  [])
+    i_sigs = signals.get("investment", [])
 
-    m_count = len(signals.get("momentum",[]))
-    i_count = len(signals.get("investment",[]))
-    m_sigs  = "\n".join(f"  - {s['type']}: {s['evidence']}"
-                        for s in signals.get("momentum",[]))
-    i_sigs  = "\n".join(f"  - {s['type']}: {s['evidence']}"
-                        for s in signals.get("investment",[]))
+    m_rag, m_pos, m_neg, m_pct = _rag_from_polarity_count(m_sigs)
+    i_rag, i_pos, i_neg, i_pct = _rag_from_polarity_count(i_sigs)
 
-    prompt = f"""You are scoring a venture in an accelerator program.
-Score based ONLY on the signals extracted from ALL their documents below.
+    # Overall RAG: worst of the two, ignoring ZERO
+    order   = {"Red": 0, "Amber": 1, "Green": 2, "ZERO": 3}
+    present = [r for r in [m_rag, i_rag] if r != "ZERO"]
+    overall = min(present, key=lambda x: order.get(x, 3)) if present else "ZERO"
 
-Venture: {vname} | Sprint: {sprint} | Completion: {pct:.0f}%
-Attendance: {att_summary}
-Notes: {notes}
+    # Human-readable reasons
+    def _reason(rag, pos, neg, pct, category):
+        total = pos + neg
+        if rag == "ZERO":
+            return f"No {category} signals found."
+        return (f"{pos}/{total} signals positive ({pct}%) → {rag}. "
+                f"{neg} negative signal(s) found.")
 
-MOMENTUM SIGNALS FOUND ({m_count} total):
-{m_sigs or "  None found"}
+    m_reason = _reason(m_rag, m_pos, m_neg, m_pct, "momentum")
+    i_reason = _reason(i_rag, i_pos, i_neg, i_pct, "investment")
 
-INVESTMENT SIGNALS FOUND ({i_count} total):
-{i_sigs or "  None found"}
+    # 10-point numeric score based on RAG combination
+    score_matrix = {
+        ("Green",  "Green"):  10,
+        ("Green",  "Amber"):   8,
+        ("Green",  "Red"):     5,
+        ("Green",  "ZERO"):    5,
+        ("Amber",  "Green"):   8,
+        ("Amber",  "Amber"):   7,
+        ("Amber",  "Red"):     3,
+        ("Amber",  "ZERO"):    3,
+        ("Red",    "Green"):   5,
+        ("Red",    "Amber"):   3,
+        ("Red",    "Red"):     1,
+        ("Red",    "ZERO"):    0,
+        ("ZERO",   "Green"):   5,
+        ("ZERO",   "Amber"):   3,
+        ("ZERO",   "Red"):     0,
+        ("ZERO",   "ZERO"):    0,
+    }
+    numeric_score = score_matrix.get((m_rag, i_rag), 0)
 
-SCORING RULES — read carefully:
-
-Sprint Momentum RAG:
-- Green: Founder ENGAGED, completing sprint objectives. Multiple positive signals.
-  Strong evidence = orders won, tasks done, active engagement, positive progress.
-- Amber: Some progress but DELAYED or INCONSISTENT. Mixed signals.
-- Red: Founder DISENGAGED, sprint unlikely to reach objective. No progress signals.
-- ZERO: Genuinely no data from any source.
-
-CRITICAL: If there are MULTIPLE strong momentum signals (orders, tasks, engagement),
-score MUST be Green. Do not score Amber if strong positive evidence exists.
-
-Self Investment RAG (must be specific to sprint '{sprint}'):
-- Green: Founder HAS ALREADY invested sprint-relevant resources.
-  Strong evidence = hired relevant staff, bought tools, spent money on sprint goals.
-- Amber: Showing INTENT to invest but not yet committed.
-- Red: No investment intent, not ready to commit.
-- ZERO: No data.
-
-CRITICAL: If investment signals clearly show money spent or staff hired for
-sprint-related goals, score MUST be Green. Do not downgrade without reason.
-
-Scoring matrix:
-Green+Green=10, Green+Amber=8, Green+Red=5, Green+ZERO=5
-Amber+Green=8, Amber+Amber=7, Amber+Red=3, Amber+ZERO=3
-Red+anything low=1-3, ZERO+ZERO=0
-
-Return ONLY this JSON:
-{{"momentum_rag":"Green/Amber/Red/ZERO",
-  "momentum_reason":"one sentence citing specific signals",
-  "investment_rag":"Green/Amber/Red/ZERO",
-  "investment_reason":"one sentence citing specific sprint-relevant signals",
-  "momentum_score":0,
-  "investment_score":0}}"""
-
-    try:
-        resp = client.messages.create(
-            model="claude-sonnet-4-5", max_tokens=400,
-            messages=[{"role":"user","content":prompt}])
-        raw  = re.sub(r"```json|```","",resp.content[0].text.strip()).strip()
-        data = json.loads(raw)
-        m    = data.get("momentum_rag","Unknown")
-        i    = data.get("investment_rag","Unknown")
-        order = {"Red":0,"Amber":1,"Green":2,"ZERO":3,"Unknown":4}
-        present = [x for x in [m,i] if x not in ["ZERO","Unknown"]]
-        overall = min(present, key=lambda x: order.get(x,4)) if present else "ZERO"
-        return {
-            "momentum_rag":     m,
-            "investment_rag":   i,
-            "overall_rag":      overall,
-            "momentum_reason":  data.get("momentum_reason","—"),
-            "investment_reason":data.get("investment_reason","—"),
-            "momentum_score":   data.get("momentum_score",0),
-            "investment_score": data.get("investment_score",0),
-        }
-    except Exception as e:
-        return {"momentum_rag":"Unknown","investment_rag":"Unknown",
-                "overall_rag":"Unknown","momentum_reason":str(e),
-                "investment_reason":"—","momentum_score":0,"investment_score":0}
+    return {
+        "momentum_rag":      m_rag,
+        "investment_rag":    i_rag,
+        "overall_rag":       overall,
+        "momentum_reason":   m_reason,
+        "investment_reason": i_reason,
+        "momentum_score":    numeric_score,
+        "investment_score":  numeric_score,
+        "momentum_positive": m_pos,
+        "momentum_negative": m_neg,
+        "momentum_pct":      m_pct,
+        "investment_positive": i_pos,
+        "investment_negative": i_neg,
+        "investment_pct":      i_pct,
+    }
 
 
 def extract_session_feedback(client, vname, transcript_text, feedback_text):
