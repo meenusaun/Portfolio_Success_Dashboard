@@ -29,7 +29,7 @@ ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "nenadmin2026")
 
-SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Session Transcripts"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
@@ -350,55 +350,46 @@ def extract_venture_from_common(venture_name, common_text):
                 relevant.append(f"[{fname_part}]\n" + "\n".join(venture_lines))
     return "\n\n".join(relevant)
 
-# ── load session transcripts from Session Transcripts folder ──
-@st.cache_data(show_spinner=False, ttl=600)
-def load_session_transcripts_cached(_sp_id, use_sp):
-    """Load all files from Common Documents/Session Transcripts/ folder."""
-    transcripts = {}  # {venture_name_lower: [{"filename": ..., "text": ...}]}
-    if not use_sp or not ENV_CLIENT_ID:
-        return transcripts
-    try:
-        from sharepoint_reader import SharePointReader
-        sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-        def scan_folder(folder_path):
-            try:
-                items = sp.list_folder(folder_path)
-                for item in items:
-                    iname = item.get("name","")
-                    ipath = f"{folder_path}/{iname}"
-                    if "folder" in item:
-                        scan_folder(ipath)
-                    elif "file" in item:
-                        ext = Path(iname).suffix.lower()
-                        if ext not in [".docx",".pdf",".xlsx",".xls",".txt"]: continue
-                        try:
-                            content = sp.download_file(ipath)
-                            text = extract_text_bytes(content, iname)
-                            if text and len(text) > 50:
-                                # Match transcript to venture by filename
-                                fname_lower = iname.lower()
-                                transcripts.setdefault("_all", []).append({
-                                    "filename": iname,
-                                    "path":     ipath,
-                                    "text":     text,
-                                })
-                        except: pass
-            except: pass
-        scan_folder(TRANSCRIPT_FOLDER)
-    except: pass
-    return transcripts
+# ── extract session transcripts from already-loaded common docs ──
+# No separate download — Session Transcripts folder was already scanned
+# during Step 0 pre-load as part of Common Documents recursive scan.
+
+def extract_transcripts_from_common(common_text):
+    """
+    Parse already-loaded common_text and return only sections
+    that came from files inside the Session Transcripts folder.
+    Returns list of {"filename": str, "text": str}.
+    """
+    results = []
+    sections = common_text.split("=== FILE:")
+    for section in sections:
+        if not section.strip(): continue
+        # Section header format: " filename.ext ===\ntext..."
+        header_end = section.find("===")
+        if header_end == -1: continue
+        fname = section[:header_end].strip()
+        text  = section[header_end+3:].strip()
+        # Only include files that were inside Session Transcripts folder
+        # (filename contains "transcript" keyword or was stored with that path hint)
+        if "transcript" in fname.lower() or "session" in fname.lower():
+            if text and len(text) > 50:
+                results.append({"filename": fname, "text": text})
+    return results
 
 def get_transcript_for_venture(vname, all_transcripts):
-    """Find transcript files matching a venture name."""
+    """
+    Find transcript entries matching a venture name.
+    all_transcripts is the list returned by extract_transcripts_from_common().
+    Matches by filename or first 2000 chars of content.
+    """
     matched = []
     vname_lower = vname.lower()
     vwords = [w for w in vname_lower.split() if len(w) > 3]
-    for entry in all_transcripts.get("_all", []):
+    for entry in all_transcripts:
         fname_lower = entry["filename"].lower()
         text_lower  = entry["text"].lower()
-        # Match by filename or text content
-        name_match = vname_lower in fname_lower or any(w in fname_lower for w in vwords)
-        text_match = vname_lower in text_lower[:2000]  # Check first 2000 chars
+        name_match  = vname_lower in fname_lower or any(w in fname_lower for w in vwords)
+        text_match  = vname_lower in text_lower[:2000]
         if name_match or text_match:
             matched.append(entry["text"])
     return "\n\n".join(matched) if matched else ""
@@ -599,6 +590,71 @@ with step1_tab:
         del st.session_state["att_data_sig"]
         st.rerun()
 
+    # ── OPT 3: Upload existing repo to skip already-processed ventures ──
+    st.markdown("---")
+    st.markdown("**⚡ Skip already-processed ventures (saves API credits)**")
+    skip_col1, skip_col2 = st.columns([3,1])
+    with skip_col1:
+        uploaded_repo = st.file_uploader(
+            "Upload existing signals_repository.json — ventures with signals already extracted will be skipped",
+            type=["json"], key="existing_repo_upload",
+            help="Only ventures with zero signals (failed or new) will be re-processed"
+        )
+    if uploaded_repo and "existing_sig_repo" not in st.session_state:
+        try:
+            existing = json.loads(uploaded_repo.read().decode("utf-8"))
+            already_done = {
+                vn for vn, vdata in existing.get("venture_summary", {}).items()
+                if len(vdata.get("signals",{}).get("momentum",[])) > 0
+                or len(vdata.get("signals",{}).get("investment",[])) > 0
+            }
+            st.session_state["existing_sig_repo"]       = existing
+            st.session_state["already_done_ventures"]   = already_done
+        except Exception as e:
+            st.error(f"Could not read file: {e}")
+
+    already_done_ventures = st.session_state.get("already_done_ventures", set())
+    existing_sig_repo     = st.session_state.get("existing_sig_repo", {})
+
+    if already_done_ventures:
+        sk1, sk2 = st.columns([3,1])
+        sk1.info(f"⚡ {len(already_done_ventures)} ventures already have signals — will be skipped  ·  "
+                 f"🆕 {len([v for v in ventures_list if v not in already_done_ventures])} ventures to process")
+        if sk2.button("🗑 Clear skip list", key="clear_skip"):
+            del st.session_state["existing_sig_repo"]
+            del st.session_state["already_done_ventures"]
+            st.rerun()
+
+        # Pre-populate sig_results from existing repo for skipped ventures
+        for vn, vdata in existing_sig_repo.get("venture_summary", {}).items():
+            if vn in already_done_ventures and vn not in sig_results:
+                sig_results[vn] = {
+                    "status":          "done",
+                    "venture_name":    vn,
+                    "hub":             vdata.get("hub","—"),
+                    "venture_partner": vdata.get("venture_partner","—"),
+                    "sprint":          vdata.get("sprint","—"),
+                    "rag":             {
+                        "overall_rag":      vdata.get("overall_rag","ZERO"),
+                        "momentum_rag":     vdata.get("momentum_rag","ZERO"),
+                        "investment_rag":   vdata.get("investment_rag","ZERO"),
+                        "momentum_reason":  vdata.get("momentum_reason","—"),
+                        "investment_reason":vdata.get("investment_reason","—"),
+                        "momentum_score":   vdata.get("momentum_score",0),
+                        "investment_score": vdata.get("investment_score",0),
+                    },
+                    "signals":         vdata.get("signals", {"momentum":[],"investment":[]}),
+                    "att_sessions":    vdata.get("att_sessions",0),
+                    "att_dates":       vdata.get("att_dates",[]),
+                    "sources_used":    vdata.get("sources_used",[]),
+                    "total_chars":     vdata.get("total_chars",0),
+                    "num_chunks":      vdata.get("num_chunks",0),
+                    "processed_at":    vdata.get("processed_at","—"),
+                }
+        st.session_state[SIG_RESULTS_KEY] = sig_results
+    st.markdown("---")
+
+
     for bi, batch in enumerate(batches):
         batch_done = sum(1 for v in batch if sig_results.get(v,{}).get("status") == "done")
         icon = "✅" if batch_done == len(batch) else ("🔄" if batch_done > 0 else "⬜")
@@ -626,8 +682,9 @@ with step1_tab:
 
                 prog = st.progress(0, text=f"Starting batch {bi+1}...")
                 for vi, vname in enumerate(batch):
-                    if sig_results.get(vname,{}).get("status") == "done":
-                        prog.progress((vi+1)/len(batch), text=f"Skipping {vname} (done)")
+                    # Skip if already done in this session OR in uploaded existing repo
+                    if sig_results.get(vname,{}).get("status") == "done" or                        vname in st.session_state.get("already_done_ventures", set()):
+                        prog.progress((vi+1)/len(batch), text=f"⚡ Skipping {vname} (already processed)")
                         continue
                     prog.progress(vi/len(batch), text=f"Processing {vname} ({vi+1}/{len(batch)})...")
 
@@ -669,6 +726,17 @@ with step1_tab:
 
                     from processor import extract_signals_from_text, score_rag_from_signals
                     signals, num_chunks = extract_signals_from_text(client, vname, sprint, full_text)
+
+                    # Surface credit/API errors immediately — do not silently store empty results
+                    api_errors = signals.get("errors", [])
+                    credit_error = any("credit balance" in str(e) or "billing" in str(e).lower()
+                                       for e in api_errors)
+                    if credit_error:
+                        prog.empty()
+                        st.error(f"❌ Anthropic API credit error on venture '{vname}'. "
+                                 f"Top up credits at console.anthropic.com → Plans & Billing, then re-run.")
+                        st.stop()
+
                     rag = score_rag_from_signals(client, vname, sprint, notes,
                                                   att_summary, signals, pct)
 
@@ -832,14 +900,14 @@ with step2_tab:
 
     fb_results = st.session_state[FB_RESULTS_KEY]
 
-    if run_all_fb or any(
-        st.session_state.get(f"run_fb_batch_{b}", False) for b in range(len(fb_batches))
-    ):
-        with st.spinner("📂 Loading Session Transcripts from SharePoint..."):
-            all_transcripts = load_session_transcripts_cached(sp_id, use_sp)
-        st.info(f"📁 Found {len(all_transcripts.get('_all',[]))} transcript files in Session Transcripts folder")
+    # Reuse already pre-loaded common docs — no second download needed
+    # Session Transcripts folder was already scanned as part of Step 0 pre-load
+    if "common_text_sig" in st.session_state:
+        all_transcripts = extract_transcripts_from_common(st.session_state["common_text_sig"])
+        st.info(f"📁 Using {len(all_transcripts)} transcript file(s) from pre-loaded Common Documents — no re-download needed")
     else:
-        all_transcripts = None
+        all_transcripts = []
+        st.warning("⚠️ Common Documents not pre-loaded yet. Go to Step 1 and click **Pre-load Common Documents & Attendance** first.")
 
     for bi, batch in enumerate(fb_batches):
         batch_done = sum(1 for v in batch if fb_results.get(v,{}).get("status") == "done")
@@ -860,9 +928,6 @@ with step2_tab:
             should_run_fb = run_fb_btn or run_all_fb
 
             if should_run_fb:
-                if all_transcripts is None:
-                    all_transcripts = load_session_transcripts_cached(sp_id, use_sp)
-
                 prog_fb = st.progress(0, text=f"Starting batch {bi+1}...")
                 for vi, vname in enumerate(batch):
                     if fb_results.get(vname,{}).get("status") == "done":
@@ -874,12 +939,12 @@ with step2_tab:
                     hub = cv(row, col_hub)
                     vp  = cv(row, col_vp) if col_vp else "—"
 
-                    # Load venture feedback file
+                    # Load venture feedback file from venture folder only
                     vfiles  = load_v_files(vname)
                     fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                     tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
 
-                    # Also check Session Transcripts folder
+                    # Session transcripts from already-loaded common docs (no re-download)
                     session_tr_text = get_transcript_for_venture(vname, all_transcripts)
 
                     # Combine all transcript sources

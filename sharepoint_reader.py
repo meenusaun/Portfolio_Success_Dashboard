@@ -68,7 +68,7 @@ class SharePointReader:
         """Download file and return bytes."""
         path = file_path.strip("/")
         url  = f"{self.GRAPH_URL}/drives/{self.drive_id}/root:/{path}:/content"
-        resp = requests.get(url, headers=self._headers(), timeout=60, allow_redirects=True)
+        resp = requests.get(url, headers=self._headers(), timeout=120, allow_redirects=True)
         if not resp.ok:
             raise Exception(f"Download failed ({resp.status_code}): {file_path}")
         return resp.content

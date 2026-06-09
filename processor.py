@@ -35,46 +35,27 @@ def extract_signals_from_text(client, vname, sprint, full_text):
     result = {"momentum": [], "investment": []}
     seen   = set()
 
-    PROMPT = """Venture: {vname} | Sprint Type: {sprint} | Chunk {n} of {total}
+    PROMPT = """Venture:{vname}|Sprint:{sprint}|Chunk {n}/{total}
 
-Extract ALL signals from the text below into TWO categories.
-For EACH signal, judge whether it is POSITIVE or NEGATIVE based on context.
+Extract signals. For each, judge POSITIVE or NEGATIVE.
+POSITIVE momentum: engaged, tasks done, orders won, progress, attendance.
+NEGATIVE momentum: disengaged, no progress, missing sessions, exit intent.
+POSITIVE investment: hired, spent, bought, committed for sprint '{sprint}'.
+NEGATIVE investment: no intent, not ready, unsure, withdrawing.
 
-POLARITY RULES:
-- POSITIVE momentum: founder engaged, tasks done, orders won, progress made, attendance confirmed, active participation
-- NEGATIVE momentum: founder disengaged, dropped out, no progress, missing sessions, wants to exit, sprint stalled
-- POSITIVE investment: staff hired, money spent, equipment bought, new market entered, self-funded activity, concrete commitment made
-- NEGATIVE investment: no investment intent, not ready to commit, unsure about value, withdrawing resources
+One signal per line, EXACT format:
+MOMENTUM:[type]|EVIDENCE:[quote]|SOURCE:[doc]|POLARITY:POSITIVE
+INVESTMENT:[type]|EVIDENCE:[quote]|SOURCE:[doc]|POLARITY:NEGATIVE
 
-SPRINT MOMENTUM SIGNALS — evidence of founder engagement and sprint progress:
-- Session attendance / meetings attended
-- Tasks completed or milestones achieved
-- Export orders / deals / contracts won
-- Positive or negative founder engagement
-- Progress or lack of progress toward sprint objectives
+Extract ALL signals including negative. If none: MOMENTUM:None found
 
-SELF INVESTMENT SIGNALS — evidence of resources committed or withheld, SPECIFIC to sprint type '{sprint}':
-- Staff hired or not hired for sprint-relevant roles
-- Equipment / tools / software purchased or not
-- Capital invested or withheld
-- New market entry or channel established
-- Any concrete financial commitment or refusal
-
-Format EXACTLY (one signal per line):
-MOMENTUM: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name] | POLARITY: POSITIVE
-INVESTMENT: [signal type] | EVIDENCE: [exact quote from text] | SOURCE: [document name] | POLARITY: NEGATIVE
-
-IMPORTANT: Be THOROUGH. Find EVERY signal including negative ones.
-Do NOT skip negative signals — they are equally important.
-If genuinely none in a category: MOMENTUM: None found
-
---- DOCUMENTS (Chunk {n}/{total}) ---
+---DOCUMENTS---
 {text}"""
 
     for i, chunk in enumerate(chunks):
         try:
             resp = client.messages.create(
-                model="claude-sonnet-4-5", max_tokens=2000,
+                model="claude-haiku-4-5-20251001", max_tokens=800,
                 messages=[{"role":"user","content":
                     PROMPT.format(vname=vname, sprint=sprint,
                                   n=i+1, total=len(chunks), text=chunk)}])
