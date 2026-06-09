@@ -29,7 +29,7 @@ ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "nenadmin2026")
 
-SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Session Transcripts"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
