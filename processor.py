@@ -37,19 +37,37 @@ def extract_signals_from_text(client, vname, sprint, full_text):
 
     PROMPT = """Venture:{vname}|Sprint:{sprint}|Chunk {n}/{total}
 
-Extract signals. For each, assign GREEN, AMBER or RED.
-GREEN momentum: strongly engaged, tasks done, orders won, clear progress, attendance confirmed.
+Extract ALL signals below into TWO categories. Assign GREEN, AMBER or RED to each.
+
+SPRINT MOMENTUM SIGNALS — look specifically for:
+- Session attendance / meetings attended
+- Tasks completed or milestones achieved
+- Export orders / deals / contracts won
+- Founder engagement (positive or negative)
+- Progress or lack of progress toward sprint objectives
+- Any evidence sprint is on track or stalled
+
+SELF INVESTMENT SIGNALS — look specifically for (must relate to sprint '{sprint}'):
+- Staff hired or not hired for sprint-relevant roles
+- Equipment / tools / software purchased or withheld
+- Capital invested or refused
+- New market entry or channel established
+- Any concrete financial commitment or withdrawal
+
+CATEGORY RULES:
+GREEN momentum: strongly engaged, tasks done, orders won, attendance confirmed, clear progress.
 AMBER momentum: partial progress, mixed engagement, delayed but still active.
 RED momentum: disengaged, no progress, missing sessions, exit intent, sprint stalled.
 GREEN investment: hired, spent, bought, concretely committed for sprint '{sprint}'.
-AMBER investment: intent shown but not yet committed, planning to invest.
+AMBER investment: intent shown but not yet committed, planning to invest soon.
 RED investment: no intent, not ready, unsure, withdrawing resources.
 
 One signal per line, EXACT format:
-MOMENTUM:[type]|EVIDENCE:[quote]|SOURCE:[doc]|CATEGORY:GREEN
-INVESTMENT:[type]|EVIDENCE:[quote]|SOURCE:[doc]|CATEGORY:AMBER
+MOMENTUM:[type]|EVIDENCE:[exact quote]|SOURCE:[doc name]|CATEGORY:GREEN
+INVESTMENT:[type]|EVIDENCE:[exact quote]|SOURCE:[doc name]|CATEGORY:AMBER
 
-Extract ALL signals. If none: MOMENTUM:None found
+Be THOROUGH — extract every signal including subtle or indirect ones.
+Do NOT skip negative signals. If genuinely none: MOMENTUM:None found
 
 ---DOCUMENTS---
 {text}"""
@@ -57,7 +75,7 @@ Extract ALL signals. If none: MOMENTUM:None found
     for i, chunk in enumerate(chunks):
         try:
             resp = client.messages.create(
-                model="claude-haiku-4-5-20251001", max_tokens=800,
+                model="claude-haiku-4-5-20251001", max_tokens=1500,
                 messages=[{"role":"user","content":
                     PROMPT.format(vname=vname, sprint=sprint,
                                   n=i+1, total=len(chunks), text=chunk)}])
