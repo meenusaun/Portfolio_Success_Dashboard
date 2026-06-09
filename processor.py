@@ -37,17 +37,19 @@ def extract_signals_from_text(client, vname, sprint, full_text):
 
     PROMPT = """Venture:{vname}|Sprint:{sprint}|Chunk {n}/{total}
 
-Extract signals. For each, judge POSITIVE or NEGATIVE.
-POSITIVE momentum: engaged, tasks done, orders won, progress, attendance.
-NEGATIVE momentum: disengaged, no progress, missing sessions, exit intent.
-POSITIVE investment: hired, spent, bought, committed for sprint '{sprint}'.
-NEGATIVE investment: no intent, not ready, unsure, withdrawing.
+Extract signals. For each, assign GREEN, AMBER or RED.
+GREEN momentum: strongly engaged, tasks done, orders won, clear progress, attendance confirmed.
+AMBER momentum: partial progress, mixed engagement, delayed but still active.
+RED momentum: disengaged, no progress, missing sessions, exit intent, sprint stalled.
+GREEN investment: hired, spent, bought, concretely committed for sprint '{sprint}'.
+AMBER investment: intent shown but not yet committed, planning to invest.
+RED investment: no intent, not ready, unsure, withdrawing resources.
 
 One signal per line, EXACT format:
-MOMENTUM:[type]|EVIDENCE:[quote]|SOURCE:[doc]|POLARITY:POSITIVE
-INVESTMENT:[type]|EVIDENCE:[quote]|SOURCE:[doc]|POLARITY:NEGATIVE
+MOMENTUM:[type]|EVIDENCE:[quote]|SOURCE:[doc]|CATEGORY:GREEN
+INVESTMENT:[type]|EVIDENCE:[quote]|SOURCE:[doc]|CATEGORY:AMBER
 
-Extract ALL signals including negative. If none: MOMENTUM:None found
+Extract ALL signals. If none: MOMENTUM:None found
 
 ---DOCUMENTS---
 {text}"""
@@ -63,109 +65,106 @@ Extract ALL signals including negative. If none: MOMENTUM:None found
                 line = line.strip()
                 if line.startswith("MOMENTUM:") and "None" not in line:
                     parts = [p.strip() for p in line.split("|")]
-                    t  = parts[0].replace("MOMENTUM:","").strip()
-                    e  = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                    s  = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
-                    pol= parts[3].replace("POLARITY:","").strip().upper() if len(parts)>3 else "POSITIVE"
-                    if pol not in ["POSITIVE","NEGATIVE"]: pol = "POSITIVE"
-                    dk = f"m_{t}_{e[:40]}"
+                    t   = parts[0].replace("MOMENTUM:","").strip()
+                    e   = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                    s   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                    cat = parts[3].replace("CATEGORY:","").strip().upper() if len(parts)>3 else "GREEN"
+                    if cat not in ["GREEN","AMBER","RED"]: cat = "GREEN"
+                    dk  = f"m_{t}_{e[:40]}"
                     if dk not in seen:
                         seen.add(dk)
-                        result["momentum"].append({"type":t,"evidence":e,"source":s,"polarity":pol})
+                        result["momentum"].append({"type":t,"evidence":e,"source":s,"category":cat})
                 elif line.startswith("INVESTMENT:") and "None" not in line:
                     parts = [p.strip() for p in line.split("|")]
-                    t  = parts[0].replace("INVESTMENT:","").strip()
-                    e  = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
-                    s  = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
-                    pol= parts[3].replace("POLARITY:","").strip().upper() if len(parts)>3 else "POSITIVE"
-                    if pol not in ["POSITIVE","NEGATIVE"]: pol = "POSITIVE"
-                    dk = f"i_{t}_{e[:40]}"
+                    t   = parts[0].replace("INVESTMENT:","").strip()
+                    e   = parts[1].replace("EVIDENCE:","").strip() if len(parts)>1 else ""
+                    s   = parts[2].replace("SOURCE:","").strip()   if len(parts)>2 else ""
+                    cat = parts[3].replace("CATEGORY:","").strip().upper() if len(parts)>3 else "GREEN"
+                    if cat not in ["GREEN","AMBER","RED"]: cat = "GREEN"
+                    dk  = f"i_{t}_{e[:40]}"
                     if dk not in seen:
                         seen.add(dk)
-                        result["investment"].append({"type":t,"evidence":e,"source":s,"polarity":pol})
+                        result["investment"].append({"type":t,"evidence":e,"source":s,"category":cat})
         except Exception as e:
             result.setdefault("errors",[]).append(f"Chunk {i+1}: {e}")
 
     return result, len(chunks)
 
 
-def _rag_from_polarity_count(signals_list):
+def _nps_from_signals(signals_list):
     """
-    Calculate RAG from polarity-labelled signals using threshold formula:
-      >= 70% POSITIVE  → Green
-      40–69% POSITIVE  → Amber
-      < 40%  POSITIVE  → Red
-      0 signals        → ZERO
-    Returns (rag, positive_count, negative_count, positive_pct)
+    Calculate NPS from GREEN/AMBER/RED categorised signals.
+    GREEN = Promoters, AMBER = Passives, RED = Detractors
+
+    NPS = % Promoters - % Detractors  (range: -100 to +100)
+
+    RAG thresholds:
+      NPS >= 20  → Green
+      NPS 0–19   → Amber
+      NPS < 0    → Red
+      0 signals  → ZERO
+
+    Returns (rag, nps, green_count, amber_count, red_count, total)
     """
     if not signals_list:
-        return "ZERO", 0, 0, 0
+        return "ZERO", 0, 0, 0, 0, 0
 
-    pos = sum(1 for s in signals_list if s.get("polarity","POSITIVE") == "POSITIVE")
-    neg = len(signals_list) - pos
-    pct = round(pos / len(signals_list) * 100)
+    green = sum(1 for s in signals_list if s.get("category","GREEN") == "GREEN")
+    amber = sum(1 for s in signals_list if s.get("category","GREEN") == "AMBER")
+    red   = sum(1 for s in signals_list if s.get("category","GREEN") == "RED")
+    total = green + amber + red
 
-    if pct >= 70:   rag = "Green"
-    elif pct >= 40: rag = "Amber"
+    pct_promoters  = round(green / total * 100)
+    pct_detractors = round(red   / total * 100)
+    nps = pct_promoters - pct_detractors
+
+    if   nps >= 20: rag = "Green"
+    elif nps >= 0:  rag = "Amber"
     else:           rag = "Red"
 
-    return rag, pos, neg, pct
+    return rag, nps, green, amber, red, total
 
 
 def score_rag_from_signals(client, vname, sprint, notes, att_summary,
                             signals, pct_raw):
     """
-    Score RAG purely from polarity-labelled signals — no separate Claude call.
+    Score RAG using NPS from GREEN/AMBER/RED categorised signals.
+    No separate Claude API call — pure formula.
 
-    Formula per category:
-      >= 70% POSITIVE signals → Green
-      40–69% POSITIVE signals → Amber
-      <  40% POSITIVE signals → Red
-      0 signals               → ZERO
+    NPS = % Green (Promoters) - % Red (Detractors)
+    Amber signals = Passives (counted in total, not in NPS numerator)
 
-    Overall RAG = worst of Momentum + Investment
-    (ZERO is treated as no-data, not worst — so Green+ZERO = Green)
+    NPS >= 20  → Green RAG
+    NPS 0–19   → Amber RAG
+    NPS < 0    → Red RAG
+    0 signals  → ZERO
+
+    Overall RAG = worst of Momentum + Investment (ZERO = no data, not worst)
     """
     m_sigs = signals.get("momentum",  [])
     i_sigs = signals.get("investment", [])
 
-    m_rag, m_pos, m_neg, m_pct = _rag_from_polarity_count(m_sigs)
-    i_rag, i_pos, i_neg, i_pct = _rag_from_polarity_count(i_sigs)
+    m_rag, m_nps, m_g, m_a, m_r, m_tot = _nps_from_signals(m_sigs)
+    i_rag, i_nps, i_g, i_a, i_r, i_tot = _nps_from_signals(i_sigs)
 
     # Overall RAG: worst of the two, ignoring ZERO
     order   = {"Red": 0, "Amber": 1, "Green": 2, "ZERO": 3}
     present = [r for r in [m_rag, i_rag] if r != "ZERO"]
     overall = min(present, key=lambda x: order.get(x, 3)) if present else "ZERO"
 
-    # Human-readable reasons
-    def _reason(rag, pos, neg, pct, category):
-        total = pos + neg
+    def _reason(rag, nps, g, a, r, tot, category):
         if rag == "ZERO":
             return f"No {category} signals found."
-        return (f"{pos}/{total} signals positive ({pct}%) → {rag}. "
-                f"{neg} negative signal(s) found.")
+        return f"NPS {nps:+d} — {g} Green, {a} Amber, {r} Red of {tot} signals → {rag}."
 
-    m_reason = _reason(m_rag, m_pos, m_neg, m_pct, "momentum")
-    i_reason = _reason(i_rag, i_pos, i_neg, i_pct, "investment")
+    m_reason = _reason(m_rag, m_nps, m_g, m_a, m_r, m_tot, "momentum")
+    i_reason = _reason(i_rag, i_nps, i_g, i_a, i_r, i_tot, "investment")
 
-    # 10-point numeric score based on RAG combination
     score_matrix = {
-        ("Green",  "Green"):  10,
-        ("Green",  "Amber"):   8,
-        ("Green",  "Red"):     5,
-        ("Green",  "ZERO"):    5,
-        ("Amber",  "Green"):   8,
-        ("Amber",  "Amber"):   7,
-        ("Amber",  "Red"):     3,
-        ("Amber",  "ZERO"):    3,
-        ("Red",    "Green"):   5,
-        ("Red",    "Amber"):   3,
-        ("Red",    "Red"):     1,
-        ("Red",    "ZERO"):    0,
-        ("ZERO",   "Green"):   5,
-        ("ZERO",   "Amber"):   3,
-        ("ZERO",   "Red"):     0,
-        ("ZERO",   "ZERO"):    0,
+        ("Green","Green"):10, ("Green","Amber"):8, ("Green","Red"):5, ("Green","ZERO"):5,
+        ("Amber","Green"):8,  ("Amber","Amber"):7, ("Amber","Red"):3, ("Amber","ZERO"):3,
+        ("Red",  "Green"):5,  ("Red",  "Amber"):3, ("Red",  "Red"):1, ("Red",  "ZERO"):0,
+        ("ZERO", "Green"):5,  ("ZERO", "Amber"):3, ("ZERO", "Red"):0, ("ZERO", "ZERO"):0,
     }
     numeric_score = score_matrix.get((m_rag, i_rag), 0)
 
@@ -177,13 +176,18 @@ def score_rag_from_signals(client, vname, sprint, notes, att_summary,
         "investment_reason": i_reason,
         "momentum_score":    numeric_score,
         "investment_score":  numeric_score,
-        "momentum_positive": m_pos,
-        "momentum_negative": m_neg,
-        "momentum_pct":      m_pct,
-        "investment_positive": i_pos,
-        "investment_negative": i_neg,
-        "investment_pct":      i_pct,
+        "momentum_nps":      m_nps,
+        "investment_nps":    i_nps,
+        "momentum_green":    m_g,
+        "momentum_amber":    m_a,
+        "momentum_red":      m_r,
+        "momentum_total":    m_tot,
+        "investment_green":  i_g,
+        "investment_amber":  i_a,
+        "investment_red":    i_r,
+        "investment_total":  i_tot,
     }
+
 
 
 def extract_session_feedback(client, vname, transcript_text, feedback_text):

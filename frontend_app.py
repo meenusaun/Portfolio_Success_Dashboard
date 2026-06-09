@@ -264,29 +264,31 @@ with st.spinner("Loading Knowledge Repositories from SharePoint..."):
     feedback_repo, fb_err  = load_feedback_repo(sp_id, use_sp)
 
 # ── RAG formula (mirrors processor.py — single source of truth) ───
-def _rag_from_polarity_count(signals_list):
+def _nps_from_signals(signals_list):
     """
-    >= 70% POSITIVE → Green
-    40-69% POSITIVE → Amber
-    <  40% POSITIVE → Red
-    0 signals       → ZERO
+    NPS from GREEN/AMBER/RED signals.
+    GREEN=Promoters, AMBER=Passives, RED=Detractors
+    NPS = %Green - %Red
+    NPS>=20 → Green, 0-19 → Amber, <0 → Red, 0 signals → ZERO
     """
     if not signals_list:
-        return "ZERO", 0, 0, 0
-    pos = sum(1 for s in signals_list if s.get("polarity","POSITIVE") == "POSITIVE")
-    neg = len(signals_list) - pos
-    pct = round(pos / len(signals_list) * 100)
-    if pct >= 70:   rag = "Green"
-    elif pct >= 40: rag = "Amber"
+        return "ZERO", 0, 0, 0, 0, 0
+    green = sum(1 for s in signals_list if s.get("category","GREEN") == "GREEN")
+    amber = sum(1 for s in signals_list if s.get("category","GREEN") == "AMBER")
+    red   = sum(1 for s in signals_list if s.get("category","GREEN") == "RED")
+    total = green + amber + red
+    nps   = round(green/total*100) - round(red/total*100)
+    if   nps >= 20: rag = "Green"
+    elif nps >= 0:  rag = "Amber"
     else:           rag = "Red"
-    return rag, pos, neg, pct
+    return rag, nps, green, amber, red, total
 
 def compute_rag_from_signals(signals):
-    """Compute full RAG dict live from a signals dict {momentum:[...], investment:[...]}"""
+    """Compute full RAG dict live from signals — NPS based. Single source of truth."""
     m_sigs = signals.get("momentum",  [])
     i_sigs = signals.get("investment", [])
-    m_rag, m_pos, m_neg, m_pct = _rag_from_polarity_count(m_sigs)
-    i_rag, i_pos, i_neg, i_pct = _rag_from_polarity_count(i_sigs)
+    m_rag, m_nps, m_g, m_a, m_r, m_tot = _nps_from_signals(m_sigs)
+    i_rag, i_nps, i_g, i_a, i_r, i_tot = _nps_from_signals(i_sigs)
 
     order   = {"Red": 0, "Amber": 1, "Green": 2, "ZERO": 3}
     present = [r for r in [m_rag, i_rag] if r != "ZERO"]
@@ -300,24 +302,30 @@ def compute_rag_from_signals(signals):
     }
     score = score_matrix.get((m_rag, i_rag), 0)
 
-    def _reason(rag, pos, neg, pct, cat):
+    def _reason(rag, nps, g, a, r, tot, cat):
         if rag == "ZERO": return f"No {cat} signals found."
-        return f"{pos}/{pos+neg} signals positive ({pct}%) → {rag}. {neg} negative signal(s)."
+        return f"NPS {nps:+d} — {g} Green, {a} Amber, {r} Red of {tot} → {rag}."
+
+    # Portfolio NPS = NPS across ALL signals combined
+    all_sigs  = m_sigs + i_sigs
+    _, p_nps, p_g, p_a, p_r, p_tot = _nps_from_signals(all_sigs)
 
     return {
         "overall_rag":       overall,
         "momentum_rag":      m_rag,
         "investment_rag":    i_rag,
-        "momentum_reason":   _reason(m_rag, m_pos, m_neg, m_pct, "momentum"),
-        "investment_reason": _reason(i_rag, i_pos, i_neg, i_pct, "investment"),
+        "momentum_reason":   _reason(m_rag, m_nps, m_g, m_a, m_r, m_tot, "momentum"),
+        "investment_reason": _reason(i_rag, i_nps, i_g, i_a, i_r, i_tot, "investment"),
         "momentum_score":    score,
         "investment_score":  score,
-        "momentum_positive": m_pos,
-        "momentum_negative": m_neg,
-        "momentum_pct":      m_pct,
-        "investment_positive": i_pos,
-        "investment_negative": i_neg,
-        "investment_pct":      i_pct,
+        "momentum_nps":      m_nps,  "investment_nps":   i_nps,
+        "momentum_green":    m_g,    "investment_green":  i_g,
+        "momentum_amber":    m_a,    "investment_amber":  i_a,
+        "momentum_red":      m_r,    "investment_red":    i_r,
+        "momentum_total":    m_tot,  "investment_total":  i_tot,
+        "portfolio_nps":     p_nps,
+        "portfolio_green":   p_g,    "portfolio_amber":   p_a,
+        "portfolio_red":     p_r,    "portfolio_total":   p_tot,
     }
 
 # ── parse repositories into lookups ───────────────────
@@ -388,12 +396,12 @@ with tab_overview:
     f1, f2, f3, f4 = st.columns(4)
     hub_opts    = ["All"] + sorted(set(cv(get_row(v),col_hub) for v in ventures_list if cv(get_row(v),col_hub) != "—"))
     vp_opts     = ["All"] + sorted(set(cv(get_row(v),col_vp)  for v in ventures_list if col_vp and cv(get_row(v),col_vp) != "—"))
-    stage_opts  = ["All","0–25%","26–50%","51–75%","76–99%","100%","Unknown"]
+
     rag_opts    = ["All","🟢 Green","🟡 Amber","🔴 Red","⚪ ZERO"]
 
     hub_f   = f1.selectbox("Hub",              hub_opts,   key="ov_hub")
     vp_f    = f2.selectbox("Venture Partner",  vp_opts,    key="ov_vp")
-    stage_f = f3.selectbox("Sprint Stage",     stage_opts, key="ov_stage")
+    stage_f = "All"  # Sprint Stage filter removed
     rag_f   = f4.selectbox("Overall RAG",      rag_opts,   key="ov_rag")
 
     # Build filtered venture data
@@ -429,7 +437,7 @@ with tab_overview:
     filtered = venture_data
     if hub_f   != "All": filtered = [v for v in filtered if v["hub"]    == hub_f]
     if vp_f    != "All": filtered = [v for v in filtered if v["vp"]     == vp_f]
-    if stage_f != "All": filtered = [v for v in filtered if v["bucket"] == stage_f]
+
     if rag_f   != "All":
         rag_val = rag_f.split(" ",1)[1]
         filtered = [v for v in filtered if v["overall_rag"] == rag_val]
@@ -481,21 +489,49 @@ with tab_overview:
             st.markdown("<div style='margin-bottom:12px'></div>", unsafe_allow_html=True)
 
     with col_b:
-        st.subheader("Sprint Stage Distribution")
+        st.subheader("Portfolio NPS")
         st.markdown("<br>", unsafe_allow_html=True)
-        stage_counts = {}
+
+        # Aggregate NPS across all filtered ventures
+        all_signals_flat = []
         for v in filtered:
-            stage_counts[v["bucket"]] = stage_counts.get(v["bucket"],0) + 1
-        for stage in ["100%","76–99%","51–75%","26–50%","0–25%","Unknown"]:
-            cnt = stage_counts.get(stage,0)
-            pct = round(cnt/total*100) if total else 0
+            sigs = venture_signals.get(v["name"], {"momentum":[],"investment":[]})
+            all_signals_flat.extend(sigs.get("momentum",[]))
+            all_signals_flat.extend(sigs.get("investment",[]))
+
+        if all_signals_flat:
+            total_sigs = len(all_signals_flat)
+            port_g = sum(1 for s in all_signals_flat if s.get("category","GREEN") == "GREEN")
+            port_a = sum(1 for s in all_signals_flat if s.get("category","GREEN") == "AMBER")
+            port_r = sum(1 for s in all_signals_flat if s.get("category","GREEN") == "RED")
+            port_nps = round(port_g/total_sigs*100) - round(port_r/total_sigs*100)
+            nps_rag  = "Green" if port_nps >= 20 else ("Amber" if port_nps >= 0 else "Red")
+            nps_color = {"Green":"#16a34a","Amber":"#d97706","Red":"#dc2626"}.get(nps_rag,"#64748b")
+
             st.markdown(
-                f"<div style='display:flex;justify-content:space-between;margin-bottom:4px'>"
-                f"<span style='font-weight:500'>{stage}</span>"
-                f"<span style='color:#64748b'>{cnt} &nbsp;({pct}%)</span></div>",
-                unsafe_allow_html=True)
-            st.progress(pct/100)
-            st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
+                f"<div style='text-align:center;margin-bottom:16px'>"
+                f"<div style='font-size:2.8rem;font-weight:800;color:{nps_color}'>{port_nps:+d}</div>"
+                f"<div style='font-size:0.82rem;color:#64748b'>Portfolio NPS</div>"
+                f"<div style='margin-top:6px'>{rag_badge(nps_rag)}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+            for label, cnt, color in [
+                ("🟢 Green (Promoters)",  port_g, "#16a34a"),
+                ("🟡 Amber (Passives)",   port_a, "#d97706"),
+                ("🔴 Red (Detractors)",   port_r, "#dc2626"),
+            ]:
+                pct_s = round(cnt/total_sigs*100) if total_sigs else 0
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;margin-bottom:4px'>"
+                    f"<span style='font-weight:500;color:{color}'>{label}</span>"
+                    f"<span style='color:#64748b'>{cnt} ({pct_s}%)</span></div>",
+                    unsafe_allow_html=True)
+                st.progress(pct_s/100)
+                st.markdown("<div style='margin-bottom:8px'></div>", unsafe_allow_html=True)
+            st.caption(f"Based on {total_sigs} total signals across {len(filtered)} ventures")
+        else:
+            st.caption("No signals loaded yet — run backend to generate repository.")
 
     with col_c:
         st.subheader("Hub-wise RAG Count")
@@ -666,7 +702,7 @@ with tab_ventures:
         rag_emoji = RAG_EMOJI.get(overall,"⚪")
 
         with st.expander(
-            f"{rag_emoji} **{vname}**  ·  {hub}  ·  {bucket}  ·  RAG: {overall}"
+            f"{rag_emoji} **{vname}**  ·  {hub}  ·  RAG: {overall}"
         ):
             # ── Venture header banner ──────────────────
             st.markdown(
@@ -733,48 +769,52 @@ with tab_ventures:
                         f"</div>",
                         unsafe_allow_html=True
                     )
+                def nps_card(label, rag, reason, nps, g, a, r, tot, score):
+                    nps_color = {"Green":"#16a34a","Amber":"#d97706","Red":"#dc2626"}.get(rag,"#64748b")
+                    bar_g = round(g/tot*100) if tot else 0
+                    bar_a = round(a/tot*100) if tot else 0
+                    bar_r = round(r/tot*100) if tot else 0
+                    return (
+                        f"<div class='info-card'>"
+                        f"<div class='section-label'>{label}</div>"
+                        f"<div style='display:flex;align-items:center;gap:12px;margin-bottom:8px'>"
+                        f"{rag_badge(rag)}"
+                        f"<span style='font-size:1.4rem;font-weight:800;color:{nps_color}'>NPS {nps:+d}</span>"
+                        f"</div>"
+                        f"<div style='font-size:0.82rem;color:#475569;margin-bottom:10px'>{reason}</div>"
+                        f"<div style='display:flex;gap:10px;font-size:0.78rem;margin-bottom:6px'>"
+                        f"<span style='color:#16a34a;font-weight:600'>🟢 {g}</span>"
+                        f"<span style='color:#d97706;font-weight:600'>🟡 {a}</span>"
+                        f"<span style='color:#dc2626;font-weight:600'>🔴 {r}</span>"
+                        f"<span style='color:#94a3b8'>/ {tot} signals</span>"
+                        f"</div>"
+                        f"<div style='display:flex;height:8px;border-radius:6px;overflow:hidden;background:#f1f5f9'>"
+                        f"<div style='background:#16a34a;width:{bar_g}%'></div>"
+                        f"<div style='background:#fbbf24;width:{bar_a}%'></div>"
+                        f"<div style='background:#dc2626;width:{bar_r}%'></div>"
+                        f"</div>"
+                        f"<div style='margin-top:8px;font-size:0.78rem;color:#94a3b8'>Score: {score}/10</div>"
+                        f"</div>"
+                    )
+
                 with rag2:
-                    m_pos = rag_data.get("momentum_positive", 0)
-                    m_neg = rag_data.get("momentum_negative", 0)
-                    m_pct = rag_data.get("momentum_pct", 0)
-                    m_total = m_pos + m_neg
-                    st.markdown(
-                        f"<div class='info-card'>"
-                        f"<div class='section-label'>Sprint Momentum</div>"
-                        f"<div style='margin-bottom:8px'>{rag_badge(m_rag)}</div>"
-                        f"<div style='font-size:0.82rem;color:#475569;margin-bottom:10px'>{m_reason}</div>"
-                        f"<div style='display:flex;gap:12px;font-size:0.78rem'>"
-                        f"<span style='color:#16a34a;font-weight:600'>✅ {m_pos} positive</span>"
-                        f"<span style='color:#dc2626;font-weight:600'>❌ {m_neg} negative</span>"
-                        f"</div>"
-                        f"<div style='margin-top:6px;background:#f1f5f9;border-radius:6px;height:6px;overflow:hidden'>"
-                        f"<div style='background:#16a34a;height:100%;width:{m_pct}%'></div></div>"
-                        f"<div style='font-size:0.72rem;color:#94a3b8;margin-top:4px'>{m_pct}% positive of {m_total} signals</div>"
-                        f"<div style='margin-top:8px;font-size:0.78rem;color:#94a3b8'>Score: {m_score}/10</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+                    m_nps = rag_data.get("momentum_nps", 0)
+                    m_g   = rag_data.get("momentum_green", 0)
+                    m_a   = rag_data.get("momentum_amber", 0)
+                    m_r   = rag_data.get("momentum_red",   0)
+                    m_tot = rag_data.get("momentum_total", 0)
+                    st.markdown(nps_card("Sprint Momentum", m_rag, m_reason,
+                                         m_nps, m_g, m_a, m_r, m_tot, m_score),
+                                unsafe_allow_html=True)
                 with rag3:
-                    i_pos = rag_data.get("investment_positive", 0)
-                    i_neg = rag_data.get("investment_negative", 0)
-                    i_pct = rag_data.get("investment_pct", 0)
-                    i_total = i_pos + i_neg
-                    st.markdown(
-                        f"<div class='info-card'>"
-                        f"<div class='section-label'>Self Investment</div>"
-                        f"<div style='margin-bottom:8px'>{rag_badge(i_rag)}</div>"
-                        f"<div style='font-size:0.82rem;color:#475569;margin-bottom:10px'>{i_reason}</div>"
-                        f"<div style='display:flex;gap:12px;font-size:0.78rem'>"
-                        f"<span style='color:#16a34a;font-weight:600'>✅ {i_pos} positive</span>"
-                        f"<span style='color:#dc2626;font-weight:600'>❌ {i_neg} negative</span>"
-                        f"</div>"
-                        f"<div style='margin-top:6px;background:#f1f5f9;border-radius:6px;height:6px;overflow:hidden'>"
-                        f"<div style='background:#16a34a;height:100%;width:{i_pct}%'></div></div>"
-                        f"<div style='font-size:0.72rem;color:#94a3b8;margin-top:4px'>{i_pct}% positive of {i_total} signals</div>"
-                        f"<div style='margin-top:8px;font-size:0.78rem;color:#94a3b8'>Score: {i_score}/10</div>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+                    i_nps = rag_data.get("investment_nps", 0)
+                    i_g   = rag_data.get("investment_green", 0)
+                    i_a   = rag_data.get("investment_amber", 0)
+                    i_r   = rag_data.get("investment_red",   0)
+                    i_tot = rag_data.get("investment_total", 0)
+                    st.markdown(nps_card("Self Investment", i_rag, i_reason,
+                                         i_nps, i_g, i_a, i_r, i_tot, i_score),
+                                unsafe_allow_html=True)
 
                 # Progress bars
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -807,13 +847,18 @@ with tab_ventures:
                             sig_type = sig.get("type","")
                             evidence = sig.get("evidence","")
                             source   = sig.get("source","")
-                            # Simple positive/negative heuristic
-                            neg_words = ["disengaged","drop out","no progress","not responding","red","delay"]
-                            is_neg = any(w in (sig_type+evidence).lower() for w in neg_words)
-                            badge_cls = "sig-neg" if is_neg else "sig-pos"
+                            cat      = sig.get("category","GREEN")
+                            cat_style = {
+                                "GREEN": "background:#dcfce7;color:#166534",
+                                "AMBER": "background:#fef9c3;color:#854d0e",
+                                "RED":   "background:#fee2e2;color:#991b1b",
+                            }.get(cat, "background:#f1f5f9;color:#475569")
+                            cat_emoji = {"GREEN":"🟢","AMBER":"🟡","RED":"🔴"}.get(cat,"⚪")
                             st.markdown(
                                 f"<div class='signal-row'>"
-                                f"<span class='{badge_cls}'>{sig_type}</span>"
+                                f"<span style='{cat_style};padding:2px 10px;border-radius:12px;"
+                                f"font-size:0.77rem;font-weight:600;display:inline-block;margin:2px'>"
+                                f"{cat_emoji} {sig_type}</span>"
                                 f"<span class='sig-src'>📄 {source}</span>"
                                 f"<div style='font-size:0.81rem;color:#475569;margin-top:4px'>{evidence}</div>"
                                 f"</div>",
@@ -836,12 +881,18 @@ with tab_ventures:
                             sig_type = sig.get("type","")
                             evidence = sig.get("evidence","")
                             source   = sig.get("source","")
-                            neg_words = ["not ready","unsure","no investment","not committed"]
-                            is_neg = any(w in (sig_type+evidence).lower() for w in neg_words)
-                            badge_cls = "sig-neg" if is_neg else "sig-pos"
+                            cat      = sig.get("category","GREEN")
+                            cat_style = {
+                                "GREEN": "background:#dcfce7;color:#166534",
+                                "AMBER": "background:#fef9c3;color:#854d0e",
+                                "RED":   "background:#fee2e2;color:#991b1b",
+                            }.get(cat, "background:#f1f5f9;color:#475569")
+                            cat_emoji = {"GREEN":"🟢","AMBER":"🟡","RED":"🔴"}.get(cat,"⚪")
                             st.markdown(
                                 f"<div class='signal-row'>"
-                                f"<span class='{badge_cls}'>{sig_type}</span>"
+                                f"<span style='{cat_style};padding:2px 10px;border-radius:12px;"
+                                f"font-size:0.77rem;font-weight:600;display:inline-block;margin:2px'>"
+                                f"{cat_emoji} {sig_type}</span>"
                                 f"<span class='sig-src'>📄 {source}</span>"
                                 f"<div style='font-size:0.81rem;color:#475569;margin-top:4px'>{evidence}</div>"
                                 f"</div>",
