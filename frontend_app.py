@@ -347,6 +347,10 @@ if feedback_repo:
     for vn, vdata in feedback_repo.get("ventures", {}).items():
         venture_feedback[vn] = vdata.get("sessions", [])
 
+mentor_insights = {}  # {mentor_name: {mentor_name, total_sessions, avg_rating, sessions:[...]}}
+if feedback_repo:
+    mentor_insights = feedback_repo.get("mentor_insights", {})
+
 repo_loaded = signals_repo is not None or feedback_repo is not None
 
 # ── header + repo status ───────────────────────────────
@@ -381,9 +385,10 @@ if not repo_loaded:
     st.stop()
 
 # ── main tabs ──────────────────────────────────────────
-tab_overview, tab_ventures = st.tabs([
+tab_overview, tab_ventures, tab_mentors = st.tabs([
     "📊  Portfolio Overview",
-    "🏢  Venture Cards"
+    "🏢  Venture Cards",
+    "👥  Mentor Insights"
 ])
 
 # ══════════════════════════════════════════════════════
@@ -1045,3 +1050,243 @@ QUESTION: {ai_question}"""
                     )
                 elif not client:
                     st.warning("Add ANTHROPIC_API_KEY to use AI Insights.")
+
+
+# ══════════════════════════════════════════════════════
+#  TAB 3: MENTOR INSIGHTS
+# ══════════════════════════════════════════════════════
+with tab_mentors:
+    st.title("👥 Mentor Insights")
+    st.divider()
+
+    if not mentor_insights:
+        st.info(
+            "No mentor data found in the repository. "
+            "Run the Backend app → Step 2 → Section A, upload both tracker files, "
+            "parse them, and download + upload the updated `feedback_repository.json`."
+        )
+    else:
+        # ── Summary metrics ───────────────────────────
+        all_sessions_flat = [
+            s for m in mentor_insights.values() for s in m.get("sessions", [])
+        ]
+        total_mentors  = len(mentor_insights)
+        total_sessions = len(all_sessions_flat)
+
+        ratings_all = [
+            s["founder_feedback"]["overall_rating"]
+            for s in all_sessions_flat
+            if s.get("founder_feedback") and s["founder_feedback"].get("overall_rating")
+        ]
+        avg_rating = round(sum(ratings_all)/len(ratings_all), 1) if ratings_all else None
+
+        followup_count = sum(
+            1 for s in all_sessions_flat
+            if str(s.get("followup_required","")).lower() == "yes"
+        )
+        followup_rate = round(followup_count/total_sessions*100) if total_sessions else 0
+
+        m1,m2,m3,m4 = st.columns(4)
+        m1.metric("Total Mentors",   total_mentors)
+        m2.metric("Total Sessions",  total_sessions)
+        m3.metric("Avg Rating",      f"{avg_rating} ⭐" if avg_rating else "N/A")
+        m4.metric("Follow-up Rate",  f"{followup_rate}%")
+
+        st.divider()
+
+        # ── Filters ───────────────────────────────────
+        f1, f2, f3, f4 = st.columns(4)
+        mentor_search = f1.text_input("🔍 Search Mentor", key="mi_search")
+
+        all_hubs = sorted(set(
+            s.get("hub","—")
+            for m in mentor_insights.values()
+            for s in m.get("sessions",[])
+            if s.get("hub","—") not in ["—","Not Available"]
+        ))
+        hub_mi = f2.selectbox("Hub", ["All"] + all_hubs, key="mi_hub")
+
+        all_types = sorted(set(
+            s.get("session_type","—")
+            for m in mentor_insights.values()
+            for s in m.get("sessions",[])
+            if s.get("session_type","—") not in ["—","Not Available"]
+        ))
+        stype_mi = f3.selectbox("Session Type", ["All"] + all_types, key="mi_stype")
+
+        rating_mi = f4.selectbox("Rating Filter",
+            ["All","⭐⭐⭐⭐⭐ (4.5+)","⭐⭐⭐⭐ (4+)","⚠️ Flagged (≤3)"],
+            key="mi_rating")
+
+        # ── Build filtered mentor list ─────────────────
+        def session_passes_filters(s):
+            if hub_mi   != "All" and s.get("hub","—") != hub_mi: return False
+            if stype_mi != "All" and s.get("session_type","—") != stype_mi: return False
+            if rating_mi != "All":
+                ff = s.get("founder_feedback") or {}
+                r  = ff.get("overall_rating") or s.get("tracker_rating")
+                if rating_mi == "⭐⭐⭐⭐⭐ (4.5+)" and (not r or r < 4.5): return False
+                if rating_mi == "⭐⭐⭐⭐ (4+)"   and (not r or r < 4.0): return False
+                if rating_mi == "⚠️ Flagged (≤3)" and (not r or r > 3.0): return False
+            return True
+
+        filtered_mentors = {}
+        for mn, mdata in mentor_insights.items():
+            if mentor_search and mentor_search.lower() not in mn.lower(): continue
+            filtered_sessions = [s for s in mdata.get("sessions",[]) if session_passes_filters(s)]
+            if filtered_sessions:
+                filtered_mentors[mn] = {**mdata, "sessions": filtered_sessions}
+
+        st.caption(f"{len(filtered_mentors)} mentors · "
+                   f"{sum(len(m['sessions']) for m in filtered_mentors.values())} sessions")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Per-mentor expanders ───────────────────────
+        for mn in sorted(filtered_mentors.keys()):
+            mdata    = filtered_mentors[mn]
+            sessions = mdata["sessions"]
+            avg_r    = mdata.get("avg_rating")
+            ventures = mdata.get("ventures_worked", [])
+            nsess    = len(sessions)
+
+            rating_str = f"⭐ {avg_r}" if avg_r else "No rating"
+            ventures_str = ", ".join(ventures[:4]) + ("..." if len(ventures)>4 else "")
+
+            with st.expander(
+                f"👤 **{mn}**  ·  {nsess} session(s)  ·  {rating_str}  ·  {ventures_str}"
+            ):
+                # Mentor summary row
+                ms1, ms2, ms3, ms4 = st.columns(4)
+                ms1.metric("Sessions",  nsess)
+                ms2.metric("Avg Rating", f"{avg_r} ⭐" if avg_r else "N/A")
+                ms3.metric("Ventures",   len(ventures))
+                followups = sum(1 for s in sessions
+                                if str(s.get("followup_required","")).lower() == "yes")
+                ms4.metric("Follow-ups Required", followups)
+
+                st.markdown(
+                    f"<div style='font-size:0.8rem;color:#64748b;margin-bottom:16px'>"
+                    f"Ventures: {', '.join(ventures)}</div>",
+                    unsafe_allow_html=True
+                )
+                st.divider()
+
+                # Each session
+                for si, session in enumerate(sessions):
+                    venture    = session.get("venture_name","—")
+                    date       = session.get("meeting_date","—")
+                    ask        = session.get("ask","Not Available")
+                    stype      = session.get("session_type","—")
+                    summary    = session.get("meeting_summary","Not Available")
+                    next_steps = session.get("next_steps","Not Available")
+                    duration   = session.get("duration_min")
+                    paid       = session.get("session_paid","—")
+                    followup   = session.get("followup_required","—")
+                    t_rating   = session.get("tracker_rating")
+                    t_feedback = session.get("tracker_feedback","Not Available")
+
+                    ff   = session.get("founder_feedback") or {}
+                    mfb  = session.get("mentor_feedback")  or {}
+
+                    # Effective rating — prefer quality tracker over session tracker
+                    eff_rating = ff.get("overall_rating") or t_rating
+                    rating_color = (
+                        "#16a34a" if eff_rating and eff_rating >= 4.0 else
+                        "#d97706" if eff_rating and eff_rating >= 3.0 else
+                        "#dc2626" if eff_rating else "#94a3b8"
+                    )
+
+                    st.markdown(
+                        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
+                        f"border-radius:10px;padding:16px 20px;margin-bottom:14px'>"
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px'>"
+                        f"<div>"
+                        f"<span style='font-weight:700;font-size:1rem'>🏢 {venture}</span>"
+                        f"<span style='color:#64748b;font-size:0.82rem;margin-left:12px'>"
+                        f"📅 {date}</span>"
+                        f"<span style='background:#e0e7ff;color:#3730a3;padding:2px 8px;"
+                        f"border-radius:8px;font-size:0.75rem;margin-left:8px'>{stype}</span>"
+                        f"</div>"
+                        f"<div style='display:flex;gap:8px;align-items:center'>"
+                        + (f"<span style='font-weight:800;font-size:1.1rem;color:{rating_color}'>"
+                           f"⭐ {eff_rating}</span>" if eff_rating else "")
+                        + (f"<span style='background:#fef9c3;color:#854d0e;padding:2px 8px;"
+                           f"border-radius:8px;font-size:0.75rem'>🔄 Follow-up</span>"
+                           if str(followup).lower() == "yes" else "")
+                        + f"</div></div>",
+                        unsafe_allow_html=True
+                    )
+
+                    # 3-column layout: Ask + Summary + Feedback
+                    sc1, sc2, sc3 = st.columns(3)
+
+                    with sc1:
+                        st.markdown(
+                            f"<div class='section-label'>Ask / Topic</div>"
+                            f"<div style='font-size:0.83rem;color:#334155'>{ask}</div>",
+                            unsafe_allow_html=True
+                        )
+                        if next_steps != "Not Available":
+                            st.markdown(
+                                f"<div class='section-label' style='margin-top:10px'>"
+                                f"Next Steps</div>"
+                                f"<div style='font-size:0.83rem;color:#334155'>"
+                                f"{next_steps}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                    with sc2:
+                        st.markdown(
+                            f"<div class='section-label'>Meeting Summary</div>"
+                            f"<div style='font-size:0.83rem;color:#334155'>{summary}</div>",
+                            unsafe_allow_html=True
+                        )
+
+                    with sc3:
+                        st.markdown(
+                            f"<div class='section-label'>Founder Feedback</div>",
+                            unsafe_allow_html=True
+                        )
+                        if ff.get("verbatim") and ff["verbatim"] != "Not Available":
+                            st.markdown(
+                                f"<div style='font-size:0.83rem;color:#166534;"
+                                f"background:#f0fdf4;padding:8px 12px;border-radius:8px;"
+                                f"border-left:3px solid #16a34a'>"
+                                f"\"{ff['verbatim']}\"</div>",
+                                unsafe_allow_html=True
+                            )
+                            if ff.get("usefulness") and ff["usefulness"] != "Not Available":
+                                st.markdown(
+                                    f"<div style='font-size:0.75rem;color:#64748b;margin-top:4px'>"
+                                    f"Usefulness: {ff['usefulness']} · "
+                                    f"Actionability: {ff.get('actionability','—')}</div>",
+                                    unsafe_allow_html=True
+                                )
+                        elif t_feedback != "Not Available":
+                            st.markdown(
+                                f"<div style='font-size:0.83rem;color:#475569'>"
+                                f"{t_feedback}</div>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                "<div style='font-size:0.83rem;color:#94a3b8'>"
+                                "Not Available</div>",
+                                unsafe_allow_html=True
+                            )
+
+                        # Mentor's own feedback on venture
+                        if mfb.get("mentee_engaged") and                            mfb["mentee_engaged"] != "Not Available":
+                            st.markdown(
+                                f"<div class='section-label' style='margin-top:10px'>"
+                                f"Mentor's View on Founder</div>"
+                                f"<div style='font-size:0.78rem;color:#475569'>"
+                                f"Engagement: {mfb['mentee_engaged']}<br>"
+                                f"Prepared: {mfb.get('mentee_prepared','—')}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    if si < len(sessions)-1:
+                        st.markdown("<br>", unsafe_allow_html=True)

@@ -380,3 +380,188 @@ def process_venture(client, vname, venture_data, load_v_files_fn,
             "signals": {"momentum":[],"investment":[]}
         })
     return result
+
+
+def parse_tracker_files(session_tracker_bytes, feedback_tracker_bytes):
+    """
+    Parse 05_Session_Management_Tracker and 06_Feedback_Quality_Tracker
+    into structured mentor_insights dict keyed by mentor name.
+
+    Returns:
+        mentor_insights: {mentor_name: {mentor_name, total_sessions,
+                          ventures_worked, avg_rating, sessions: [...]}}
+    """
+    import pandas as pd
+    import io
+    from difflib import SequenceMatcher
+
+    def safe_str(val):
+        if val is None: return "Not Available"
+        s = str(val).strip()
+        return "Not Available" if s in ["nan","None","NaT",""] else s
+
+    def safe_float(val):
+        try:
+            f = float(val)
+            return round(f, 1) if not (f != f) else None  # NaN check
+        except: return None
+
+    def fuzzy_match(a, b):
+        a_l = str(a).lower().strip()
+        b_l = str(b).lower().strip()
+        if a_l == b_l: return True
+        ratio = SequenceMatcher(None, a_l, b_l).ratio()
+        return ratio >= 0.85
+
+    # Load Session Tracker
+    df_sess = pd.read_excel(
+        io.BytesIO(session_tracker_bytes),
+        sheet_name="Session Tracker"
+    )
+
+    # Load Feedback Quality Tracker — two sheets
+    df_fb = pd.read_excel(
+        io.BytesIO(feedback_tracker_bytes),
+        sheet_name="Session Feedback"
+    )
+    df_mfb = pd.read_excel(
+        io.BytesIO(feedback_tracker_bytes),
+        sheet_name="Feedback from Mentor"
+    )
+
+    # Build founder feedback lookup: {(venture_lower, mentor_lower): row}
+    fb_lookup = {}
+    for _, row in df_fb.iterrows():
+        vn = safe_str(row.get("Venture Name",""))
+        mn = safe_str(row.get("Mentor Name",""))
+        if vn != "Not Available" and mn != "Not Available":
+            fb_lookup[(vn.lower(), mn.lower())] = row
+
+    # Build mentor feedback lookup: {venture_lower: row}
+    mfb_lookup = {}
+    for _, row in df_mfb.iterrows():
+        vn = safe_str(row.get("Venture Name",""))
+        if vn != "Not Available":
+            mfb_lookup[vn.lower()] = row
+
+    def get_founder_feedback(venture, mentor):
+        """Fuzzy match founder feedback by venture+mentor."""
+        vl = venture.lower(); ml = mentor.lower()
+        # Exact match first
+        if (vl, ml) in fb_lookup:
+            r = fb_lookup[(vl, ml)]
+            return {
+                "overall_rating":      safe_float(r.get("Overall Rating (1-5)")),
+                "usefulness":          safe_str(r.get("How useful was this mentor session for your current business priorities?")),
+                "actionability":       safe_str(r.get("Actionability of Advice")),
+                "followup_requested":  safe_str(r.get("Follow-Up Requested?")),
+                "verbatim":            safe_str(r.get("Verbatim Feedback")),
+                "flagged":             safe_str(r.get("Flagged (≤3)?")),
+                "feedback_date":       safe_str(r.get("Date")),
+            }
+        # Fuzzy match
+        for (fvn, fmn), r in fb_lookup.items():
+            if fuzzy_match(vl, fvn) and fuzzy_match(ml, fmn):
+                return {
+                    "overall_rating":     safe_float(r.get("Overall Rating (1-5)")),
+                    "usefulness":         safe_str(r.get("How useful was this mentor session for your current business priorities?")),
+                    "actionability":      safe_str(r.get("Actionability of Advice")),
+                    "followup_requested": safe_str(r.get("Follow-Up Requested?")),
+                    "verbatim":           safe_str(r.get("Verbatim Feedback")),
+                    "flagged":            safe_str(r.get("Flagged (≤3)?")),
+                    "feedback_date":      safe_str(r.get("Date")),
+                }
+        return None
+
+    def get_mentor_feedback(venture):
+        """Fuzzy match mentor feedback by venture name."""
+        vl = venture.lower()
+        if vl in mfb_lookup:
+            r = mfb_lookup[vl]
+        else:
+            r = next((v for k,v in mfb_lookup.items() if fuzzy_match(vl,k)), None)
+        if r is None: return None
+        return {
+            "mentor_name":        safe_str(r.get("Your Name")),
+            "agenda_relevant":    safe_str(r.get("1. Was the session agenda relevant to the startup's current stage and specific needs?")),
+            "mentee_prepared":    safe_str(r.get("5. How prepared and organized was your mentee for the session?")),
+            "mentee_engaged":     safe_str(r.get("6. How engaged is your mentee during mentoring sessions, in terms of active participation and willingness to discuss challenges?")),
+            "session_rating":     safe_str(r.get("8. How would you like to rate the session?")),
+            "action_items_relevant": safe_str(r.get("9. How relevant were the recommended action items to the discussion during your session?")),
+            "improvements":       safe_str(r.get("7. Is there anything the venture (or platform) could have done better to make this session more effective?")),
+        }
+
+    # Build mentor_insights
+    mentor_insights = {}
+
+    for _, row in df_sess.iterrows():
+        venture = safe_str(row.get("Venture Name",""))
+        mentor  = safe_str(row.get("Mentor Name",""))
+        if venture == "Not Available" or mentor == "Not Available":
+            continue
+
+        # Get date
+        raw_date = row.get("Meeting Date")
+        try:
+            date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+        except: date_str = safe_str(raw_date)
+
+        # Get rating from tracker
+        tracker_rating = safe_float(row.get("Feedback Rating (1-5)"))
+
+        # Founder feedback from quality tracker
+        founder_fb = get_founder_feedback(venture, mentor)
+
+        # Mentor feedback
+        mentor_fb  = get_mentor_feedback(venture)
+
+        session_record = {
+            "meeting_id":              safe_str(row.get("Meeting ID")),
+            "venture_name":            venture,
+            "hub":                     safe_str(row.get("Hub")),
+            "program_tier":            safe_str(row.get("Program Tier")),
+            "meeting_date":            date_str,
+            "session_type":            safe_str(row.get("Session Type")),
+            "ask":                     safe_str(row.get("Ask")),
+            "duration_min":            safe_float(row.get("Duration (min)")),
+            "meeting_summary":         safe_str(row.get("Meeting Summary")),
+            "next_steps":              safe_str(row.get("Next Steps / Action Items")),
+            "followup_required":       safe_str(row.get("Follow-Up Required?")),
+            "followup_status":         safe_str(row.get("Follow-Up Status")),
+            "tracker_rating":          tracker_rating,
+            "tracker_feedback":        safe_str(row.get("Feedback Comments")),
+            "rn_team_member":          safe_str(row.get("RN Team Member")),
+            "session_paid":            safe_str(row.get("Session Paid or Probono")),
+            # Enriched from quality tracker
+            "founder_feedback":        founder_fb,
+            "mentor_feedback":         mentor_fb,
+        }
+
+        # Add to mentor_insights
+        if mentor not in mentor_insights:
+            mentor_insights[mentor] = {
+                "mentor_name":     mentor,
+                "total_sessions":  0,
+                "ventures_worked": [],
+                "ratings":         [],
+                "sessions":        [],
+            }
+
+        mentor_insights[mentor]["sessions"].append(session_record)
+        mentor_insights[mentor]["total_sessions"] += 1
+        if venture not in mentor_insights[mentor]["ventures_worked"]:
+            mentor_insights[mentor]["ventures_worked"].append(venture)
+
+        # Collect ratings for avg
+        rating = (founder_fb.get("overall_rating") if founder_fb else None) or tracker_rating
+        if rating: mentor_insights[mentor]["ratings"].append(rating)
+
+    # Compute avg rating per mentor
+    for mn, mdata in mentor_insights.items():
+        ratings = mdata.pop("ratings", [])
+        mdata["avg_rating"] = round(sum(ratings)/len(ratings), 1) if ratings else None
+        # Sort sessions by date descending
+        mdata["sessions"].sort(
+            key=lambda s: s.get("meeting_date",""), reverse=True)
+
+    return mentor_insights

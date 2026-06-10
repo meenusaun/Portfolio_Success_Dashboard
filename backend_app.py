@@ -868,12 +868,61 @@ with step1_tab:
 with step2_tab:
     st.markdown("### 🎙 Generate Feedback Repository")
     st.caption(
-        "Reads venture feedback files + Session Transcripts folder → "
-        "Extracts session data → Saves to `feedback_repository.json`"
+        "Parses Session Tracker + Feedback Quality Tracker (no API credits needed) + "
+        "reads venture transcripts via Claude → Saves to `feedback_repository.json`"
     )
 
     if not client:
-        st.error("❌ Anthropic API key required."); st.stop()
+        st.error("❌ Anthropic API key required for transcript extraction."); st.stop()
+
+    # ── Section A: Parse Tracker Files ──────────────────
+    st.markdown("#### 📊 Section A — Parse Tracker Files")
+    st.caption("Upload both tracker files. These are parsed directly — no API credits used.")
+
+    ta_col1, ta_col2 = st.columns(2)
+    with ta_col1:
+        sess_file = st.file_uploader(
+            "05_Session_Management_Tracker.xlsx",
+            type=["xlsx"], key="sess_tracker_upload"
+        )
+    with ta_col2:
+        fb_file = st.file_uploader(
+            "06_Feedback_Quality_Tracker.xlsx",
+            type=["xlsx"], key="fb_tracker_upload"
+        )
+
+    MENTOR_KEY = "mentor_insights_parsed"
+
+    if sess_file and fb_file:
+        if st.button("📊 Parse Tracker Files", key="parse_trackers"):
+            with st.spinner("Parsing tracker files..."):
+                try:
+                    from processor import parse_tracker_files
+                    sess_bytes = sess_file.read()
+                    fb_bytes   = fb_file.read()
+                    mentor_insights = parse_tracker_files(sess_bytes, fb_bytes)
+                    st.session_state[MENTOR_KEY] = mentor_insights
+                    total_sess = sum(m["total_sessions"] for m in mentor_insights.values())
+                    st.success(
+                        f"✅ Parsed {len(mentor_insights)} mentors · "
+                        f"{total_sess} sessions · 0 API credits used"
+                    )
+                except Exception as e:
+                    st.error(f"Parse error: {e}")
+    elif st.session_state.get(MENTOR_KEY):
+        mi = st.session_state[MENTOR_KEY]
+        total_sess = sum(m["total_sessions"] for m in mi.values())
+        st.success(f"✅ Tracker data loaded — {len(mi)} mentors · {total_sess} sessions")
+        if st.button("🗑 Clear tracker data", key="clear_trackers"):
+            del st.session_state[MENTOR_KEY]; st.rerun()
+    else:
+        st.info("Upload both tracker files above to parse session and feedback data.")
+
+    st.divider()
+
+    # ── Section B: Venture Transcript Sessions ──────────
+    st.markdown("#### 🎙 Section B — Extract Venture Sessions from Transcripts")
+    st.caption("Uses Claude to extract structured sessions from transcript files. API credits used here.")
 
     fb_ctrl1, fb_ctrl2, fb_ctrl3 = st.columns([2,1,1])
     with fb_ctrl1:
@@ -885,46 +934,42 @@ with step2_tab:
         fb_batch_size = st.selectbox("Batch size", [5, 10, 15, 20], index=1, key="fb_batch_size")
     with fb_ctrl3:
         st.markdown("<br>", unsafe_allow_html=True)
-        run_all_fb = st.button("▶ Generate All Feedback", key="run_all_feedback",
+        run_all_fb = st.button("▶ Generate All", key="run_all_feedback",
                                use_container_width=True)
 
-    fb_target = fb_venture_filter if fb_venture_filter else ventures_list
+    fb_target  = fb_venture_filter if fb_venture_filter else ventures_list
     fb_batches = [fb_target[i:i+fb_batch_size] for i in range(0, len(fb_target), fb_batch_size)]
-
     st.caption(f"{len(fb_target)} ventures · {len(fb_batches)} batches of {fb_batch_size}")
     st.divider()
 
     FB_RESULTS_KEY = "fb_repo_results"
     if FB_RESULTS_KEY not in st.session_state:
         st.session_state[FB_RESULTS_KEY] = {}
-
     fb_results = st.session_state[FB_RESULTS_KEY]
 
-    # Reuse already pre-loaded common docs — no second download needed
-    # Session Transcripts folder was already scanned as part of Step 0 pre-load
     if "common_text_sig" in st.session_state:
         all_transcripts = extract_transcripts_from_common(st.session_state["common_text_sig"])
-        st.info(f"📁 Using {len(all_transcripts)} transcript file(s) from pre-loaded Common Documents — no re-download needed")
+        st.info(f"📁 Using {len(all_transcripts)} transcript file(s) from pre-loaded Common Documents")
     else:
         all_transcripts = []
-        st.warning("⚠️ Common Documents not pre-loaded yet. Go to Step 1 and click **Pre-load Common Documents & Attendance** first.")
+        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first.")
 
     for bi, batch in enumerate(fb_batches):
         batch_done = sum(1 for v in batch if fb_results.get(v,{}).get("status") == "done")
         icon = "✅" if batch_done == len(batch) else ("🔄" if batch_done > 0 else "⬜")
-        with st.expander(f"{icon} Batch {bi+1}  —  {batch_done}/{len(batch)} done  —  {', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"):
+        with st.expander(
+            f"{icon} Batch {bi+1}  —  {batch_done}/{len(batch)} done  —  "
+            f"{', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"
+        ):
             for vn in batch:
                 vr = fb_results.get(vn,{})
                 vs = vr.get("status","pending")
                 ic = {"done":"✅","error":"❌"}.get(vs,"⬜")
-                if vs == "done":
-                    nsess = len(vr.get("sessions",[]))
-                    st.caption(f"{ic} {vn}  ·  {nsess} session(s) extracted")
-                else:
-                    st.caption(f"{ic} {vn}  ·  Not processed")
+                nsess = len(vr.get("sessions",[])) if vs == "done" else "—"
+                st.caption(f"{ic} {vn}  ·  {nsess} session(s)")
 
             st.markdown("")
-            run_fb_btn = st.button(f"▶ Run Batch {bi+1}", key=f"run_fb_batch_{bi}")
+            run_fb_btn   = st.button(f"▶ Run Batch {bi+1}", key=f"run_fb_batch_{bi}")
             should_run_fb = run_fb_btn or run_all_fb
 
             if should_run_fb:
@@ -933,21 +978,15 @@ with step2_tab:
                     if fb_results.get(vname,{}).get("status") == "done":
                         prog_fb.progress((vi+1)/len(batch), text=f"Skipping {vname}")
                         continue
-                    prog_fb.progress(vi/len(batch), text=f"Processing {vname} ({vi+1}/{len(batch)})...")
-
-                    row = get_row(vname)
-                    hub = cv(row, col_hub)
-                    vp  = cv(row, col_vp) if col_vp else "—"
-
-                    # Load venture feedback file from venture folder only
-                    vfiles  = load_v_files(vname)
+                    prog_fb.progress(vi/len(batch),
+                                     text=f"Processing {vname} ({vi+1}/{len(batch)})...")
+                    row    = get_row(vname)
+                    hub    = cv(row, col_hub)
+                    vp     = cv(row, col_vp) if col_vp else "—"
+                    vfiles = load_v_files(vname)
                     fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                     tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-
-                    # Session transcripts from already-loaded common docs (no re-download)
-                    session_tr_text = get_transcript_for_venture(vname, all_transcripts)
-
-                    # Combine all transcript sources
+                    session_tr_text    = get_transcript_for_venture(vname, all_transcripts)
                     combined_transcript = "\n\n".join(t for t in [tr_text, session_tr_text] if t)
 
                     from processor import extract_session_feedback
@@ -967,22 +1006,30 @@ with step2_tab:
                 prog_fb.progress(1.0, text=f"✅ Batch {bi+1} complete!")
                 st.rerun()
 
-    # ── download feedback repo ──────────────────────────
+    # ── Download combined feedback_repository.json ──────
     st.divider()
-    done_count_f = sum(1 for v in fb_results.values() if v.get("status") == "done")
-    st.markdown(f"**{done_count_f}/{len(ventures_list)} ventures processed**")
+    done_count_f     = sum(1 for v in fb_results.values() if v.get("status") == "done")
+    mentor_insights  = st.session_state.get(MENTOR_KEY, {})
+    can_download     = done_count_f > 0 or bool(mentor_insights)
 
-    if done_count_f > 0:
+    st.markdown(
+        f"**{done_count_f}/{len(ventures_list)} venture transcripts processed · "
+        f"{len(mentor_insights)} mentors parsed**"
+    )
+
+    if can_download:
         fb_dl_col, _ = st.columns(2)
         with fb_dl_col:
             st.markdown("**💾 Download feedback_repository.json**")
             fb_payload = {
-                "generated_at":   datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                "venture_count":  done_count_f,
-                "ventures":       {
+                "generated_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                "venture_count": done_count_f,
+                "mentor_count":  len(mentor_insights),
+                "ventures":      {
                     vn: vr for vn, vr in fb_results.items()
                     if vr.get("status") == "done"
-                }
+                },
+                "mentor_insights": mentor_insights,
             }
             st.download_button(
                 "⬇️ Download feedback_repository.json",
@@ -991,6 +1038,10 @@ with step2_tab:
                 mime="application/json",
             )
             st.caption(f"Upload this file to SharePoint at:\n`{FEEDBACK_REPO_PATH}`")
+            if not mentor_insights:
+                st.warning("⚠️ Mentor insights not yet parsed — upload tracker files in Section A first.")
+            if done_count_f == 0:
+                st.info("ℹ️ No venture transcripts processed — Section B is optional.")
 
 # ══════════════════════════════════════════════════════
 #  STATUS TAB
