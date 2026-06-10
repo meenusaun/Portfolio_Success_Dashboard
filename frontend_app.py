@@ -304,9 +304,9 @@ def compute_rag_from_signals(signals):
 
     def _reason(rag, nps, g, a, r, tot, cat):
         if rag == "ZERO": return f"No {cat} signals found."
-        return f"NPS {nps:+d} — {g} Green, {a} Amber, {r} Red of {tot} → {rag}."
+        return f"Signal NPS {nps:+d} — {g} Green, {a} Amber, {r} Red of {tot} → {rag}."
 
-    # Portfolio NPS = NPS across ALL signals combined
+    # Portfolio Signal NPS = Signal NPS across ALL signals combined
     all_sigs  = m_sigs + i_sigs
     _, p_nps, p_g, p_a, p_r, p_tot = _nps_from_signals(all_sigs)
 
@@ -385,14 +385,191 @@ if not repo_loaded:
     st.stop()
 
 # ── main tabs ──────────────────────────────────────────
-tab_overview, tab_ventures, tab_mentors = st.tabs([
+tab_definitions, tab_overview, tab_ventures, tab_mentors = st.tabs([
+    "📖  How It Works",
     "📊  Portfolio Overview",
     "🏢  Venture Cards",
     "👥  Mentor Insights"
 ])
 
 # ══════════════════════════════════════════════════════
-#  TAB 1: PORTFOLIO OVERVIEW
+#  TAB 1: HOW IT WORKS — DEFINITIONS
+# ══════════════════════════════════════════════════════
+with tab_definitions:
+    st.title("📖 How It Works")
+    st.caption("Definitions, scoring rules and methodology for the Portfolio Success Intelligence Dashboard")
+    st.divider()
+
+    def def_card(title, content_html):
+        return f"""<div style='background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;
+        padding:24px 28px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,0.04)'>
+        <div style='font-size:1.05rem;font-weight:700;color:#1e293b;margin-bottom:14px'>
+        {title}</div>{content_html}</div>"""
+
+    def rule_row(rag, emoji, definition):
+        colors = {"Green":("#dcfce7","#166534"),"Amber":("#fef9c3","#854d0e"),
+                  "Red":("#fee2e2","#991b1b"),"ZERO":("#f1f5f9","#64748b")}
+        bg, fg = colors.get(rag, ("#f1f5f9","#475569"))
+        return (f"<div style='display:flex;align-items:flex-start;gap:14px;"
+                f"padding:10px 0;border-bottom:1px solid #f1f5f9'>"
+                f"<span style='background:{bg};color:{fg};padding:3px 14px;"
+                f"border-radius:20px;font-weight:700;font-size:0.83rem;"
+                f"white-space:nowrap;min-width:70px;text-align:center'>"
+                f"{emoji} {rag}</span>"
+                f"<div style='font-size:0.87rem;color:#334155;line-height:1.6'>"
+                f"{definition}</div></div>")
+
+    # Row 1: What is a Signal + Signal Categories
+    r1c1, r1c2 = st.columns(2)
+
+    with r1c1:
+        signal_def = (
+            rule_row("GREEN","🟢","Founder has <strong>taken action</strong> related to the sprint — completed or meaningfully in progress. E.g. hired an export manager, won an export order, completed a sprint task.") +
+            rule_row("AMBER","🟡","Founder has <strong>stated a plan</strong> — intends to act but has not started yet. E.g. plans to attend a trade show, intends to hire by next quarter.") +
+            rule_row("RED","🔴","Founder has <strong>not acted and has no plan</strong>, or is disengaged from the sprint. E.g. not responding, dropped out, no sprint progress.") +
+            "<div style='font-size:0.78rem;color:#94a3b8;margin-top:10px;padding-top:8px;border-top:1px solid #f1f5f9'>"
+            "Note: Background context, market observations, and current-state descriptions are NOT signals. "
+            "Only founder actions count.</div>"
+        )
+        st.markdown(def_card("✦ What is a Signal?", signal_def), unsafe_allow_html=True)
+
+    with r1c2:
+        signal_nps_def = (
+            "<div style='font-size:0.87rem;color:#334155;line-height:1.8;margin-bottom:14px'>"
+            "<strong>Signal NPS</strong> measures the quality of founder actions using a Net Promoter Score approach:</div>"
+            "<div style='background:#f8fafc;border-radius:8px;padding:14px 16px;font-family:monospace;"
+            "font-size:0.85rem;color:#1e293b;margin-bottom:14px'>"
+            "Signal NPS = % Green signals − % Red signals<br>"
+            "Range: −100 to +100"
+            "</div>"
+            "<div style='font-size:0.87rem;color:#334155;margin-bottom:10px'>"
+            "<strong>🟢 Green = Promoters</strong> — actions taken<br>"
+            "<strong>🟡 Amber = Passives</strong> — plans stated (counted in total, not in NPS)<br>"
+            "<strong>🔴 Red = Detractors</strong> — no action, no plan</div>"
+            + rule_row("Green","🟢","Signal NPS ≥ 20")
+            + rule_row("Amber","🟡","Signal NPS 0 to 19")
+            + rule_row("Red","🔴","Signal NPS < 0")
+            + rule_row("ZERO","⚪","No signals found — insufficient data")
+        )
+        st.markdown(def_card("📐 Signal NPS — How RAG is Calculated", signal_nps_def), unsafe_allow_html=True)
+
+    # Row 2: Momentum RAG + Investment RAG
+    r2c1, r2c2 = st.columns(2)
+
+    with r2c1:
+        mom_def = (
+            "<div style='font-size:0.87rem;color:#334155;line-height:1.6;margin-bottom:12px'>"
+            "Measures whether the founder is <strong>engaged and progressing</strong> on their sprint. "
+            "Calculated from Sprint Momentum signals only.</div>"
+            + rule_row("Green","🟢","Founder actively engaged — attending sessions, completing tasks, winning orders, sprint on track.")
+            + rule_row("Amber","🟡","Partial engagement — some actions taken but sprint delayed or mixed progress.")
+            + rule_row("Red","🔴","Founder disengaged — missing sessions, no sprint progress, likely to not complete.")
+            + rule_row("ZERO","⚪","No momentum signals found in any document.")
+        )
+        st.markdown(def_card("🏃 Sprint Momentum RAG", mom_def), unsafe_allow_html=True)
+
+    with r2c2:
+        inv_def = (
+            "<div style='font-size:0.87rem;color:#334155;line-height:1.6;margin-bottom:12px'>"
+            "Measures whether the founder is <strong>committing resources</strong> (money, staff, time) "
+            "specifically toward the sprint topic. Only sprint-relevant investment counts.</div>"
+            + rule_row("Green","🟢","Founder has already invested — hired relevant staff, purchased tools, committed capital to sprint goals.")
+            + rule_row("Amber","🟡","Founder has stated intent to invest — plans to hire or spend but not yet committed.")
+            + rule_row("Red","🔴","No investment intent — not ready, unsure, or withdrawing resources from sprint.")
+            + rule_row("ZERO","⚪","No investment signals found in any document.")
+        )
+        st.markdown(def_card("💰 Self Investment RAG", inv_def), unsafe_allow_html=True)
+
+    # Row 3: Overall Venture RAG + Portfolio RAG
+    r3c1, r3c2 = st.columns(2)
+
+    with r3c1:
+        overall_def = (
+            "<div style='font-size:0.87rem;color:#334155;line-height:1.6;margin-bottom:12px'>"
+            "The <strong>worst</strong> of Sprint Momentum RAG and Self Investment RAG. "
+            "ZERO is treated as no-data and does not pull the score down.</div>"
+            "<div style='background:#f8fafc;border-radius:8px;padding:12px 16px;"
+            "font-size:0.83rem;font-family:monospace;color:#1e293b;margin-bottom:14px'>"
+            "Overall RAG = min(Momentum RAG, Investment RAG)<br>"
+            "If one is ZERO → Overall = the other one<br>"
+            "If both ZERO → Overall = ZERO"
+            "</div>"
+            "<div style='font-size:0.85rem;font-weight:600;color:#475569;margin-bottom:8px'>"
+            "10-Point Numeric Score Matrix:</div>"
+            "<table style='width:100%;font-size:0.78rem;border-collapse:collapse'>"
+            "<tr style='background:#f1f5f9'>"
+            "<th style='padding:4px 8px;text-align:left'></th>"
+            "<th style='padding:4px 8px;text-align:center'>🟢 Inv</th>"
+            "<th style='padding:4px 8px;text-align:center'>🟡 Inv</th>"
+            "<th style='padding:4px 8px;text-align:center'>🔴 Inv</th>"
+            "<th style='padding:4px 8px;text-align:center'>⚪ Inv</th>"
+            "</tr>"
+            "<tr><td style='padding:4px 8px;font-weight:600'>🟢 Mom</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#16a34a;font-weight:700'>10</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#16a34a'>8</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#d97706'>5</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#d97706'>5</td></tr>"
+            "<tr style='background:#f8fafc'><td style='padding:4px 8px;font-weight:600'>🟡 Mom</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#16a34a'>8</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#d97706;font-weight:700'>7</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626'>3</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626'>3</td></tr>"
+            "<tr><td style='padding:4px 8px;font-weight:600'>🔴 Mom</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#d97706'>5</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626'>3</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626;font-weight:700'>1</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626'>0</td></tr>"
+            "<tr style='background:#f8fafc'><td style='padding:4px 8px;font-weight:600'>⚪ Mom</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#d97706'>5</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626'>3</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#dc2626'>0</td>"
+            "<td style='padding:4px 8px;text-align:center;color:#94a3b8;font-weight:700'>0</td></tr>"
+            "</table>"
+        )
+        st.markdown(def_card("🎯 Overall Venture RAG", overall_def), unsafe_allow_html=True)
+
+    with r3c2:
+        port_def = (
+            "<div style='font-size:0.87rem;color:#334155;line-height:1.6;margin-bottom:12px'>"
+            "Reflects the health of the <strong>entire portfolio</strong> using Signal NPS "
+            "aggregated across all ventures and all signals.</div>"
+            "<div style='background:#f8fafc;border-radius:8px;padding:12px 16px;"
+            "font-size:0.83rem;font-family:monospace;color:#1e293b;margin-bottom:14px'>"
+            "Portfolio Signal NPS =<br>"
+            "  % Green signals (all ventures) − % Red signals (all ventures)"
+            "</div>"
+            + rule_row("Green","🟢","Portfolio Signal NPS ≥ 20 — majority of ventures taking strong action on sprints.")
+            + rule_row("Amber","🟡","Portfolio Signal NPS 0–19 — mixed portfolio, many ventures with plans but not yet acting.")
+            + rule_row("Red","🔴","Portfolio Signal NPS < 0 — more ventures disengaged than engaged across the portfolio.")
+            + "<div style='font-size:0.78rem;color:#94a3b8;margin-top:12px;padding-top:8px;"
+            "border-top:1px solid #f1f5f9'>"
+            "Filters (Hub, Venture Partner, RAG) apply to Portfolio Signal NPS — "
+            "the score updates dynamically as you filter.</div>"
+        )
+        st.markdown(def_card("🌐 Overall Portfolio RAG", port_def), unsafe_allow_html=True)
+
+    # Row 4: Data sources
+    st.markdown(
+        def_card("📂 Data Sources Used Per Venture",
+            "<div style='display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;font-size:0.83rem'>"
+            "<div><div style='font-weight:600;color:#1e293b;margin-bottom:6px'>📁 Venture Folder</div>"
+            "<div style='color:#475569;line-height:1.8'>"
+            "Feedback file<br>Session transcript<br>Sprint plan<br>Growth Journey report<br>Other venture documents</div></div>"
+            "<div><div style='font-weight:600;color:#1e293b;margin-bottom:6px'>📂 Common Documents</div>"
+            "<div style='color:#475569;line-height:1.8'>"
+            "Attendance tracker<br>Growth Journey reports<br>Export signal documents<br>"
+            "Session Transcripts folder<br>Any other shared files</div></div>"
+            "<div><div style='font-weight:600;color:#1e293b;margin-bottom:6px'>📊 Tracker Files</div>"
+            "<div style='color:#475569;line-height:1.8'>"
+            "05_Session_Management_Tracker<br>06_Feedback_Quality_Tracker<br>"
+            "Portfolio Dashboard Excel<br>(Company sheet, row 3 headers)</div></div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True
+    )
+
+# ══════════════════════════════════════════════════════
+#  TAB 2: PORTFOLIO OVERVIEW
 # ══════════════════════════════════════════════════════
 with tab_overview:
     st.title("📊 Portfolio Overview")
@@ -494,10 +671,10 @@ with tab_overview:
             st.markdown("<div style='margin-bottom:12px'></div>", unsafe_allow_html=True)
 
     with col_b:
-        st.subheader("Portfolio NPS")
+        st.subheader("Portfolio Signal NPS")
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Aggregate NPS across all filtered ventures
+        # Aggregate Signal NPS across all filtered ventures
         all_signals_flat = []
         for v in filtered:
             sigs = venture_signals.get(v["name"], {"momentum":[],"investment":[]})
@@ -516,7 +693,7 @@ with tab_overview:
             st.markdown(
                 f"<div style='text-align:center;margin-bottom:16px'>"
                 f"<div style='font-size:2.8rem;font-weight:800;color:{nps_color}'>{port_nps:+d}</div>"
-                f"<div style='font-size:0.82rem;color:#64748b'>Portfolio NPS</div>"
+                f"<div style='font-size:0.82rem;color:#64748b'>Portfolio Signal NPS</div>"
                 f"<div style='margin-top:6px'>{rag_badge(nps_rag)}</div>"
                 f"</div>",
                 unsafe_allow_html=True
@@ -784,7 +961,7 @@ with tab_ventures:
                         f"<div class='section-label'>{label}</div>"
                         f"<div style='display:flex;align-items:center;gap:12px;margin-bottom:8px'>"
                         f"{rag_badge(rag)}"
-                        f"<span style='font-size:1.4rem;font-weight:800;color:{nps_color}'>NPS {nps:+d}</span>"
+                        f"<span style='font-size:1.4rem;font-weight:800;color:{nps_color}'>Signal NPS {nps:+d}</span>"
                         f"</div>"
                         f"<div style='font-size:0.82rem;color:#475569;margin-bottom:10px'>{reason}</div>"
                         f"<div style='display:flex;gap:10px;font-size:0.78rem;margin-bottom:6px'>"
@@ -1171,122 +1348,80 @@ with tab_mentors:
                 )
                 st.divider()
 
-                # Each session
-                for si, session in enumerate(sessions):
-                    venture    = session.get("venture_name","—")
-                    date       = session.get("meeting_date","—")
-                    ask        = session.get("ask","Not Available")
-                    stype      = session.get("session_type","—")
-                    summary    = session.get("meeting_summary","Not Available")
-                    next_steps = session.get("next_steps","Not Available")
-                    duration   = session.get("duration_min")
-                    paid       = session.get("session_paid","—")
-                    followup   = session.get("followup_required","—")
+                # ── Sessions table ─────────────────────────
+                def na(v): return "—" if not v or str(v) in ["Not Available","nan","None",""] else str(v)
+
+                rows_html = ""
+                for session in sessions:
+                    venture    = na(session.get("venture_name"))
+                    date       = na(session.get("meeting_date"))
+                    ask        = na(session.get("ask"))
+                    stype      = na(session.get("session_type"))
+                    summary    = na(session.get("meeting_summary"))
+                    next_steps = na(session.get("next_steps"))
+                    followup   = na(session.get("followup_required"))
                     t_rating   = session.get("tracker_rating")
-                    t_feedback = session.get("tracker_feedback","Not Available")
-
-                    ff   = session.get("founder_feedback") or {}
-                    mfb  = session.get("mentor_feedback")  or {}
-
-                    # Effective rating — prefer quality tracker over session tracker
+                    t_feedback = na(session.get("tracker_feedback"))
+                    ff         = session.get("founder_feedback") or {}
+                    mfb        = session.get("mentor_feedback")  or {}
                     eff_rating = ff.get("overall_rating") or t_rating
-                    rating_color = (
-                        "#16a34a" if eff_rating and eff_rating >= 4.0 else
-                        "#d97706" if eff_rating and eff_rating >= 3.0 else
-                        "#dc2626" if eff_rating else "#94a3b8"
-                    )
+                    verbatim   = na(ff.get("verbatim") or t_feedback)
+                    usefulness = na(ff.get("usefulness"))
+                    engagement = na(mfb.get("mentee_engaged"))
 
-                    st.markdown(
-                        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
-                        f"border-radius:10px;padding:16px 20px;margin-bottom:14px'>"
-                        f"<div style='display:flex;justify-content:space-between;"
-                        f"align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px'>"
-                        f"<div>"
-                        f"<span style='font-weight:700;font-size:1rem'>🏢 {venture}</span>"
-                        f"<span style='color:#64748b;font-size:0.82rem;margin-left:12px'>"
-                        f"📅 {date}</span>"
-                        f"<span style='background:#e0e7ff;color:#3730a3;padding:2px 8px;"
-                        f"border-radius:8px;font-size:0.75rem;margin-left:8px'>{stype}</span>"
-                        f"</div>"
-                        f"<div style='display:flex;gap:8px;align-items:center'>"
-                        + (f"<span style='font-weight:800;font-size:1.1rem;color:{rating_color}'>"
-                           f"⭐ {eff_rating}</span>" if eff_rating else "")
-                        + (f"<span style='background:#fef9c3;color:#854d0e;padding:2px 8px;"
-                           f"border-radius:8px;font-size:0.75rem'>🔄 Follow-up</span>"
-                           if str(followup).lower() == "yes" else "")
-                        + f"</div></div>",
-                        unsafe_allow_html=True
-                    )
+                    try:
+                        rc = ("#16a34a" if float(eff_rating)>=4.0 else
+                              "#d97706" if float(eff_rating)>=3.0 else "#dc2626") if eff_rating else "#94a3b8"
+                    except: rc = "#94a3b8"
 
-                    # 3-column layout: Ask + Summary + Feedback
-                    sc1, sc2, sc3 = st.columns(3)
+                    rating_str  = (f"<span style='font-weight:700;color:{rc}'>&#11088; {eff_rating}</span>"
+                                   if eff_rating else "<span style='color:#94a3b8'>—</span>")
+                    followup_str= ("<span style='background:#fef9c3;color:#854d0e;padding:1px 6px;"
+                                   "border-radius:6px;font-size:0.72rem'>&#128260; Yes</span>"
+                                   if str(followup).lower()=="yes"
+                                   else "<span style='color:#94a3b8'>—</span>")
+                    stype_str   = (f"<span style='background:#e0e7ff;color:#3730a3;padding:1px 7px;"
+                                   f"border-radius:6px;font-size:0.72rem'>{stype}</span>"
+                                   if stype!="—" else "—")
 
-                    with sc1:
-                        st.markdown(
-                            f"<div class='section-label'>Ask / Topic</div>"
-                            f"<div style='font-size:0.83rem;color:#334155'>{ask}</div>",
-                            unsafe_allow_html=True
-                        )
-                        if next_steps != "Not Available":
-                            st.markdown(
-                                f"<div class='section-label' style='margin-top:10px'>"
-                                f"Next Steps</div>"
-                                f"<div style='font-size:0.83rem;color:#334155'>"
-                                f"{next_steps}</div>",
-                                unsafe_allow_html=True
-                            )
+                    fb_cell = ""
+                    if verbatim != "—":
+                        fb_cell += (f"<div style='color:#166534;font-style:italic;margin-bottom:3px'>"
+                                    f"&ldquo;{verbatim[:120]}{'...' if len(verbatim)>120 else ''}&rdquo;</div>")
+                    if usefulness != "—":
+                        fb_cell += f"<div style='font-size:0.72rem;color:#64748b'>Useful: {usefulness}</div>"
+                    if not fb_cell: fb_cell = "<span style='color:#94a3b8'>—</span>"
 
-                    with sc2:
-                        st.markdown(
-                            f"<div class='section-label'>Meeting Summary</div>"
-                            f"<div style='font-size:0.83rem;color:#334155'>{summary}</div>",
-                            unsafe_allow_html=True
-                        )
+                    mentor_cell = (f"<div style='font-size:0.78rem'>{engagement[:80]}</div>"
+                                   if engagement != "—" else "<span style='color:#94a3b8'>—</span>")
 
-                    with sc3:
-                        st.markdown(
-                            f"<div class='section-label'>Founder Feedback</div>",
-                            unsafe_allow_html=True
-                        )
-                        if ff.get("verbatim") and ff["verbatim"] != "Not Available":
-                            st.markdown(
-                                f"<div style='font-size:0.83rem;color:#166534;"
-                                f"background:#f0fdf4;padding:8px 12px;border-radius:8px;"
-                                f"border-left:3px solid #16a34a'>"
-                                f"\"{ff['verbatim']}\"</div>",
-                                unsafe_allow_html=True
-                            )
-                            if ff.get("usefulness") and ff["usefulness"] != "Not Available":
-                                st.markdown(
-                                    f"<div style='font-size:0.75rem;color:#64748b;margin-top:4px'>"
-                                    f"Usefulness: {ff['usefulness']} · "
-                                    f"Actionability: {ff.get('actionability','—')}</div>",
-                                    unsafe_allow_html=True
-                                )
-                        elif t_feedback != "Not Available":
-                            st.markdown(
-                                f"<div style='font-size:0.83rem;color:#475569'>"
-                                f"{t_feedback}</div>",
-                                unsafe_allow_html=True
-                            )
-                        else:
-                            st.markdown(
-                                "<div style='font-size:0.83rem;color:#94a3b8'>"
-                                "Not Available</div>",
-                                unsafe_allow_html=True
-                            )
+                    rows_html += f"""<tr style='border-bottom:1px solid #f1f5f9'>
+                        <td style='padding:8px 12px;font-weight:600;white-space:nowrap;color:#1e293b'>{venture}</td>
+                        <td style='padding:8px 12px;white-space:nowrap;color:#64748b'>{date}</td>
+                        <td style='padding:8px 12px'>{stype_str}</td>
+                        <td style='padding:8px 12px;max-width:180px'>{ask}</td>
+                        <td style='padding:8px 12px;max-width:220px;color:#475569'>{summary}</td>
+                        <td style='padding:8px 12px;max-width:160px;color:#475569'>{next_steps}</td>
+                        <td style='padding:8px 12px;max-width:220px'>{fb_cell}</td>
+                        <td style='padding:8px 12px;text-align:center'>{rating_str}</td>
+                        <td style='padding:8px 12px;text-align:center'>{followup_str}</td>
+                        <td style='padding:8px 12px;max-width:140px'>{mentor_cell}</td>
+                    </tr>"""
 
-                        # Mentor's own feedback on venture
-                        if mfb.get("mentee_engaged") and                            mfb["mentee_engaged"] != "Not Available":
-                            st.markdown(
-                                f"<div class='section-label' style='margin-top:10px'>"
-                                f"Mentor's View on Founder</div>"
-                                f"<div style='font-size:0.78rem;color:#475569'>"
-                                f"Engagement: {mfb['mentee_engaged']}<br>"
-                                f"Prepared: {mfb.get('mentee_prepared','—')}</div>",
-                                unsafe_allow_html=True
-                            )
-
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    if si < len(sessions)-1:
-                        st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div style='overflow-x:auto;margin-top:8px'>
+                <table style='width:100%;border-collapse:collapse;font-size:0.81rem;font-family:Inter,sans-serif'>
+                    <thead><tr style='background:#f1f5f9;border-bottom:2px solid #e2e8f0'>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600;white-space:nowrap'>Venture</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600;white-space:nowrap'>Date</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Type</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Ask / Topic</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Meeting Summary</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Next Steps</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Founder Feedback</th>
+                        <th style='padding:8px 12px;text-align:center;color:#475569;font-weight:600'>Rating</th>
+                        <th style='padding:8px 12px;text-align:center;color:#475569;font-weight:600'>Follow-up</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Mentor View</th>
+                    </tr></thead>
+                    <tbody>{rows_html}</tbody>
+                </table></div>""", unsafe_allow_html=True)
