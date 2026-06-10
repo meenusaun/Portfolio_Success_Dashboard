@@ -35,39 +35,43 @@ def extract_signals_from_text(client, vname, sprint, full_text):
     result = {"momentum": [], "investment": []}
     seen   = set()
 
-    PROMPT = """Venture:{vname}|Sprint:{sprint}|Chunk {n}/{total}
+    PROMPT = """Venture:{vname}|Sprint Topic:{sprint}|Chunk {n}/{total}
 
-Extract ALL signals below into TWO categories. Assign GREEN, AMBER or RED to each.
+A SIGNAL is evidence of a FOUNDER ACTION related to the sprint topic '{sprint}'.
+Extract only what the FOUNDER DID or PLANS TO DO around this sprint.
 
-SPRINT MOMENTUM SIGNALS — look specifically for:
-- Session attendance / meetings attended
-- Tasks completed or milestones achieved
-- Export orders / deals / contracts won
-- Founder engagement (positive or negative)
-- Progress or lack of progress toward sprint objectives
-- Any evidence sprint is on track or stalled
+SIGNAL CATEGORIES:
+GREEN  = Founder has TAKEN ACTION — completed or meaningfully in progress
+AMBER  = Founder has STATED A PLAN — intends to act but has not started yet
+RED    = Founder has NOT acted AND has no plan, OR is disengaged from the sprint
 
-SELF INVESTMENT SIGNALS — look specifically for (must relate to sprint '{sprint}'):
-- Staff hired or not hired for sprint-relevant roles
-- Equipment / tools / software purchased or withheld
-- Capital invested or refused
-- New market entry or channel established
-- Any concrete financial commitment or withdrawal
+DO NOT extract as signals:
+- Descriptions of current state ("no international exposure yet", "market is competitive")
+- Background context about the company or sector
+- Observations without founder action ("export documentation is complex")
+- Opinions or feelings without a concrete action ("founder feels it is difficult")
 
-CATEGORY RULES:
-GREEN momentum: strongly engaged, tasks done, orders won, attendance confirmed, clear progress.
-AMBER momentum: partial progress, mixed engagement, delayed but still active.
-RED momentum: disengaged, no progress, missing sessions, exit intent, sprint stalled.
-GREEN investment: hired, spent, bought, concretely committed for sprint '{sprint}'.
-AMBER investment: intent shown but not yet committed, planning to invest soon.
-RED investment: no intent, not ready, unsure, withdrawing resources.
+ONLY extract where there is clear evidence of what the FOUNDER DID or PLANS TO DO.
 
-One signal per line, EXACT format:
-MOMENTUM:[type]|EVIDENCE:[exact quote]|SOURCE:[doc name]|CATEGORY:GREEN
-INVESTMENT:[type]|EVIDENCE:[exact quote]|SOURCE:[doc name]|CATEGORY:AMBER
+SPRINT MOMENTUM — founder actions around sprint engagement and progress:
+- Attended or missed sprint sessions
+- Completed or started sprint tasks / milestones
+- Won orders / deals / contracts related to sprint '{sprint}'
+- Took any concrete step toward sprint objectives
+- Explicitly disengaged or dropped out of sprint
 
-Be THOROUGH — extract every signal including subtle or indirect ones.
-Do NOT skip negative signals. If genuinely none: MOMENTUM:None found
+SELF INVESTMENT — founder actions committing resources to sprint '{sprint}':
+- Hired staff for sprint-relevant roles (or explicitly decided not to)
+- Purchased equipment / tools / software for sprint goals
+- Invested own capital into sprint-related activities
+- Entered a new market or channel as part of sprint
+- Stated a concrete plan to invest (AMBER) or explicitly refused (RED)
+
+FORMAT — one signal per line:
+MOMENTUM:[what the founder did/plans]|EVIDENCE:[exact quote from text]|SOURCE:[doc name]|CATEGORY:GREEN
+INVESTMENT:[what the founder did/plans]|EVIDENCE:[exact quote from text]|SOURCE:[doc name]|CATEGORY:AMBER
+
+If genuinely no founder actions found in a category: MOMENTUM:None found
 
 ---DOCUMENTS---
 {text}"""
