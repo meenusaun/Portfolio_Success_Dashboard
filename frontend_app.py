@@ -1418,9 +1418,9 @@ with tab_mentors:
         total_sessions = len(all_sessions_flat)
 
         ratings_all = [
-            s["founder_feedback"]["overall_rating"]
+            s["founder_rating"]
             for s in all_sessions_flat
-            if s.get("founder_feedback") and s["founder_feedback"].get("overall_rating")
+            if s.get("founder_rating") is not None
         ]
         avg_rating = round(sum(ratings_all)/len(ratings_all), 1) if ratings_all else None
 
@@ -1467,8 +1467,7 @@ with tab_mentors:
             if hub_mi   != "All" and s.get("hub","—") != hub_mi: return False
             if stype_mi != "All" and s.get("session_type","—") != stype_mi: return False
             if rating_mi != "All":
-                ff = s.get("founder_feedback") or {}
-                r  = ff.get("overall_rating") or s.get("tracker_rating")
+                r  = s.get("founder_rating")
                 if rating_mi == "⭐⭐⭐⭐⭐ (4.5+)" and (not r or r < 4.5): return False
                 if rating_mi == "⭐⭐⭐⭐ (4+)"   and (not r or r < 4.0): return False
                 if rating_mi == "⚠️ Flagged (≤3)" and (not r or r > 3.0): return False
@@ -1527,14 +1526,13 @@ with tab_mentors:
                     summary    = na(session.get("meeting_summary"))
                     next_steps = na(session.get("next_steps"))
                     followup   = na(session.get("followup_required"))
-                    t_rating   = session.get("tracker_rating")
-                    t_feedback = na(session.get("tracker_feedback"))
-                    ff         = session.get("founder_feedback") or {}
-                    mfb        = session.get("mentor_feedback")  or {}
-                    eff_rating = ff.get("overall_rating") or t_rating
-                    verbatim   = na(ff.get("verbatim") or t_feedback)
-                    usefulness = na(ff.get("usefulness"))
-                    engagement = na(mfb.get("mentee_engaged"))
+                    t_rating   = session.get("founder_rating")
+                    t_feedback = na(session.get("founder_feedback"))
+                    eff_rating = t_rating
+                    verbatim   = t_feedback
+                    usefulness = na(session.get("founder_usefulness"))
+                    mfb_eng    = na(session.get("mentor_engagement"))
+                    engagement = mfb_eng
 
                     try:
                         rc = ("#16a34a" if float(eff_rating)>=4.0 else
