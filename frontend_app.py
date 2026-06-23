@@ -26,7 +26,7 @@ ENV_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
 ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 
-SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
@@ -350,6 +350,95 @@ if feedback_repo:
 mentor_insights = {}  # {mentor_name: {mentor_name, total_sessions, avg_rating, sessions:[...]}}
 if feedback_repo:
     mentor_insights = feedback_repo.get("mentor_insights", {})
+
+# ── Build unified session list per venture from ALL sources ──
+# Source 1+2: Session Tracker + Feedback Quality Tracker (via mentor_insights)
+# Source 3+4+5: Transcript/feedback files (via venture_feedback Claude extraction)
+# Both tabs use this same master lookup — Mentor Insights just re-groups by mentor
+
+venture_tracker_sessions = {}   # {vname: [tracker sessions normalised]}
+all_sessions_by_venture  = {}   # {vname: [ALL sessions from all sources]}
+
+# Step A — normalise tracker sessions per venture
+for mn, mdata in mentor_insights.items():
+    for s in mdata.get("sessions", []):
+        vn = s.get("venture_name","")
+        if not vn: continue
+        ff  = s.get("founder_feedback") or {}
+        mfb = s.get("mentor_feedback")  or {}
+        normalised = {
+            "source":             "Session Tracker",
+            "mentor_name":        mn,
+            "session_date":       s.get("meeting_date","Not Available"),
+            "session_type":       s.get("session_type","Not Available"),
+            "topics_discussed":   s.get("ask","Not Available"),
+            "key_outputs":        s.get("next_steps","Not Available"),
+            "session_summary":    s.get("meeting_meeting","Not Available") or s.get("meeting_summary","Not Available"),
+            "founder_feedback":   ff.get("verbatim") or s.get("tracker_feedback","Not Available"),
+            "founder_rating":     ff.get("overall_rating") or s.get("tracker_rating"),
+            "founder_usefulness": ff.get("usefulness","Not Available"),
+            "followup_required":  s.get("followup_required","Not Available"),
+            "mentor_engagement":  mfb.get("mentee_engaged","Not Available"),
+            "mentor_prepared":    mfb.get("mentee_prepared","Not Available"),
+        }
+        venture_tracker_sessions.setdefault(vn, []).append(normalised)
+        all_sessions_by_venture.setdefault(vn, []).append(normalised)
+
+# Step B — add Claude-extracted transcript sessions per venture
+for vn, sess_list in venture_feedback.items():
+    for s in sess_list:
+        normalised = {
+            "source":             "Transcript",
+            "mentor_name":        s.get("mentor_name","Not Available"),
+            "session_date":       s.get("session_date","Not Available"),
+            "session_type":       "Not Available",
+            "topics_discussed":   s.get("topics_discussed","Not Available"),
+            "key_outputs":        s.get("key_outputs","Not Available"),
+            "session_summary":    s.get("session_summary","Not Available"),
+            "founder_feedback":   s.get("founder_feedback","Not Available"),
+            "founder_rating":     None,
+            "founder_usefulness": "Not Available",
+            "followup_required":  "Not Available",
+            "mentor_engagement":  "Not Available",
+            "mentor_prepared":    "Not Available",
+        }
+        all_sessions_by_venture.setdefault(vn, []).append(normalised)
+
+# Step C — sort all sessions per venture by date descending
+for vn in all_sessions_by_venture:
+    all_sessions_by_venture[vn].sort(
+        key=lambda s: s.get("session_date",""), reverse=True)
+
+# Step D — rebuild mentor_insights_unified grouping ALL sessions by mentor
+# This ensures Mentor Insights tab shows tracker + transcript sessions together
+mentor_insights_unified = {}   # {mentor_name: {sessions: [...], ventures: [...], ...}}
+
+for vn, sess_list in all_sessions_by_venture.items():
+    for s in sess_list:
+        mn = s.get("mentor_name","Not Available")
+        if mn in ["Not Available","—",""]: mn = "Unknown Mentor"
+        if mn not in mentor_insights_unified:
+            mentor_insights_unified[mn] = {
+                "mentor_name":     mn,
+                "total_sessions":  0,
+                "ventures_worked": [],
+                "ratings":         [],
+                "sessions":        [],
+            }
+        # Attach venture name to session for Mentor Insights display
+        s_with_venture = {**s, "venture_name": vn}
+        mentor_insights_unified[mn]["sessions"].append(s_with_venture)
+        mentor_insights_unified[mn]["total_sessions"] += 1
+        if vn not in mentor_insights_unified[mn]["ventures_worked"]:
+            mentor_insights_unified[mn]["ventures_worked"].append(vn)
+        if s.get("founder_rating"):
+            mentor_insights_unified[mn]["ratings"].append(s["founder_rating"])
+
+# Compute avg rating and sort sessions by date
+for mn, mdata in mentor_insights_unified.items():
+    ratings = mdata.pop("ratings", [])
+    mdata["avg_rating"] = round(sum(ratings)/len(ratings), 1) if ratings else None
+    mdata["sessions"].sort(key=lambda s: s.get("session_date",""), reverse=True)
 
 repo_loaded = signals_repo is not None or feedback_repo is not None
 
@@ -1097,73 +1186,149 @@ with tab_ventures:
             with tab_sessions:
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                if not sessions:
-                    st.info("No session or feedback data found for this venture in the Knowledge Repository.")
-                    st.caption("Run the Backend app → Step 2 to generate the Feedback Repository.")
-                else:
-                    st.markdown(
-                        f"<div style='margin-bottom:16px'>"
-                        f"<span style='font-weight:700'>{len(sessions)} session(s) found</span>"
-                        f"</div>",
-                        unsafe_allow_html=True
-                    )
+                # All sessions from all sources — unified lookup
+                tracker_sessions     = venture_tracker_sessions.get(vname, [])
+                transcript_sessions  = sessions  # Claude-extracted from transcripts
+                all_venture_sessions = all_sessions_by_venture.get(vname, [])
 
-                    for si, session in enumerate(sessions):
-                        mentor   = session.get("mentor_name","Not Available")
-                        date     = session.get("session_date","Not Available")
-                        topics   = session.get("topics_discussed","Not Available")
-                        outputs  = session.get("key_outputs","Not Available")
-                        fb_text  = session.get("founder_feedback","Not Available")
-                        summary  = session.get("session_summary","Not Available")
-                        srcs     = session.get("sources_used",[])
+                total_sess = len(all_venture_sessions)
+
+                if total_sess == 0:
+                    st.info("No session data found for this venture.")
+                    st.caption(
+                        "Run Backend → Step 2 Section A (upload tracker files) and "
+                        "Section B (transcript extraction) to populate this tab."
+                    )
+                else:
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Sessions from Tracker",     len(tracker_sessions))
+                    m2.metric("Sessions from Transcripts", len(transcript_sessions))
+                    m3.metric("Total Sessions",            total_sess)
+                    st.divider()
+
+                    def session_card(si, session, source_label, source_color):
+                        mentor  = session.get("mentor_name","Not Available")
+                        date    = session.get("session_date","Not Available")
+                        stype   = session.get("session_type","")
+                        topics  = session.get("topics_discussed","Not Available")
+                        outputs = session.get("key_outputs","Not Available")
+                        summary = session.get("session_summary","Not Available")
+                        fb_text = session.get("founder_feedback","Not Available")
+                        rating  = session.get("founder_rating")
+                        useful  = session.get("founder_usefulness","Not Available")
+                        followup= session.get("followup_required","Not Available")
+                        m_eng   = session.get("mentor_engagement","Not Available")
+                        m_prep  = session.get("mentor_prepared","Not Available")
+
+                        rating_str = f"⭐ {rating}" if rating else ""
+                        followup_badge = (
+                            "<span style='background:#fef9c3;color:#854d0e;padding:2px 8px;"
+                            "border-radius:8px;font-size:0.75rem'>🔄 Follow-up</span>"
+                            if str(followup).lower() == "yes" else ""
+                        )
+                        stype_badge = (
+                            f"<span style='background:#e0e7ff;color:#3730a3;padding:2px 8px;"
+                            f"border-radius:8px;font-size:0.75rem'>{stype}</span>"
+                            if stype and stype != "Not Available" else ""
+                        )
 
                         st.markdown(
                             f"<div class='session-card'>"
-                            f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                            f"margin-bottom:14px;flex-wrap:wrap;gap:8px'>"
-                            f"<div style='font-weight:700;font-size:1rem'>Session {si+1}: {mentor}</div>"
-                            f"<div style='display:flex;gap:8px;flex-wrap:wrap'>"
-                            f"<span style='background:#f1f5f9;color:#475569;padding:3px 10px;"
-                            f"border-radius:10px;font-size:0.78rem'>📅 {date}</span>"
-                            + (f"<span style='background:#e0e7ff;color:#3730a3;padding:3px 10px;"
-                               f"border-radius:10px;font-size:0.78rem'>{'  '.join(srcs)}</span>"
-                               if srcs else "")
+                            f"<div style='display:flex;justify-content:space-between;"
+                            f"align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px'>"
+                            f"<div>"
+                            f"<span style='font-weight:700;font-size:1rem'>"
+                            f"Session {si+1}: {mentor}</span>"
+                            f"<span style='background:{source_color};color:white;padding:2px 8px;"
+                            f"border-radius:8px;font-size:0.72rem;margin-left:8px'>"
+                            f"{source_label}</span>"
+                            f"</div>"
+                            f"<div style='display:flex;gap:6px;align-items:center;flex-wrap:wrap'>"
+                            f"<span style='background:#f1f5f9;color:#475569;padding:2px 8px;"
+                            f"border-radius:8px;font-size:0.75rem'>📅 {date}</span>"
+                            f"{stype_badge}{followup_badge}"
+                            + (f"<span style='font-weight:700;color:#16a34a'>{rating_str}</span>"
+                               if rating_str else "")
                             + f"</div></div>",
                             unsafe_allow_html=True
                         )
 
-                        # 3-column layout inside session card
                         sc1, sc2, sc3 = st.columns(3)
                         with sc1:
-                            st.markdown(f"<div class='section-label'>Topics Discussed</div>", unsafe_allow_html=True)
                             st.markdown(
+                                f"<div class='section-label'>Ask / Topics Discussed</div>"
                                 f"<div style='font-size:0.83rem;color:#334155'>{topics}</div>",
                                 unsafe_allow_html=True
                             )
                         with sc2:
-                            st.markdown(f"<div class='section-label'>Key Outputs / Actions</div>", unsafe_allow_html=True)
                             st.markdown(
+                                f"<div class='section-label'>Key Outputs / Next Steps</div>"
                                 f"<div style='font-size:0.83rem;color:#334155'>{outputs}</div>",
                                 unsafe_allow_html=True
                             )
                         with sc3:
-                            st.markdown(f"<div class='section-label'>Founder Feedback on Mentor</div>", unsafe_allow_html=True)
-                            fb_color = "#166534" if fb_text != "Not Available" else "#94a3b8"
+                            fb_color = "#166534" if (fb_text and fb_text != "Not Available") else "#94a3b8"
                             st.markdown(
+                                f"<div class='section-label'>Founder Feedback on Mentor</div>"
                                 f"<div style='font-size:0.83rem;color:{fb_color}'>{fb_text}</div>",
                                 unsafe_allow_html=True
                             )
+                            if useful and useful != "Not Available":
+                                st.markdown(
+                                    f"<div style='font-size:0.75rem;color:#64748b;margin-top:4px'>"
+                                    f"Usefulness: {useful}</div>",
+                                    unsafe_allow_html=True
+                                )
 
-                        st.markdown(f"<div class='section-label' style='margin-top:12px'>Session Summary</div>", unsafe_allow_html=True)
+                        if summary and summary != "Not Available":
+                            st.markdown(
+                                f"<div class='section-label' style='margin-top:10px'>"
+                                f"Meeting Summary</div>"
+                                f"<div style='font-size:0.84rem;color:#475569;background:#f8fafc;"
+                                f"padding:10px 14px;border-radius:8px;"
+                                f"border-left:3px solid #6366f1'>{summary}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                        # Mentor's view (only from tracker)
+                        if m_eng and m_eng != "Not Available":
+                            st.markdown(
+                                f"<div style='font-size:0.78rem;color:#64748b;margin-top:8px'>"
+                                f"Mentor view — Engagement: {m_eng} · Prepared: {m_prep}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                    # ── Section 1: Tracker Sessions ──────────
+                    if tracker_sessions:
                         st.markdown(
-                            f"<div style='font-size:0.84rem;color:#475569;background:#f8fafc;"
-                            f"padding:10px 14px;border-radius:8px;border-left:3px solid #6366f1'>"
-                            f"{summary}</div>",
+                            f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
+                            f"📊 From Session Tracker ({len(tracker_sessions)} sessions)</div>",
                             unsafe_allow_html=True
                         )
-                        st.markdown("</div>", unsafe_allow_html=True)
-                        if si < len(sessions)-1:
-                            st.markdown("<br>", unsafe_allow_html=True)
+                        for si, sess in enumerate(tracker_sessions):
+                            session_card(si, sess,
+                                         source_label="Session Tracker",
+                                         source_color="#6366f1")
+                            if si < len(tracker_sessions)-1:
+                                st.markdown("<br>", unsafe_allow_html=True)
+
+                    # ── Section 2: Transcript Sessions ───────
+                    if transcript_sessions:
+                        if tracker_sessions:
+                            st.divider()
+                        st.markdown(
+                            f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
+                            f"🎙 From Transcripts ({len(transcript_sessions)} sessions)</div>",
+                            unsafe_allow_html=True
+                        )
+                        for si, sess in enumerate(transcript_sessions):
+                            session_card(si, sess,
+                                         source_label="Transcript",
+                                         source_color="#0891b2")
+                            if si < len(transcript_sessions)-1:
+                                st.markdown("<br>", unsafe_allow_html=True)
 
             # ── TAB: AI INSIGHTS ───────────────────────
             with tab_ai:
@@ -1236,18 +1401,20 @@ with tab_mentors:
     st.title("👥 Mentor Insights")
     st.divider()
 
-    if not mentor_insights:
+    # Use unified mentor insights — combines tracker + transcript sessions
+    active_mentor_insights = mentor_insights_unified if mentor_insights_unified else mentor_insights
+
+    if not active_mentor_insights:
         st.info(
-            "No mentor data found in the repository. "
-            "Run the Backend app → Step 2 → Section A, upload both tracker files, "
-            "parse them, and download + upload the updated `feedback_repository.json`."
+            "No mentor data found. Run Backend → Step 2 Section A (tracker files) "
+            "and Section B (transcripts) then upload the updated feedback_repository.json."
         )
     else:
         # ── Summary metrics ───────────────────────────
         all_sessions_flat = [
-            s for m in mentor_insights.values() for s in m.get("sessions", [])
+            s for m in active_mentor_insights.values() for s in m.get("sessions", [])
         ]
-        total_mentors  = len(mentor_insights)
+        total_mentors  = len(active_mentor_insights)
         total_sessions = len(all_sessions_flat)
 
         ratings_all = [
@@ -1308,7 +1475,7 @@ with tab_mentors:
             return True
 
         filtered_mentors = {}
-        for mn, mdata in mentor_insights.items():
+        for mn, mdata in active_mentor_insights.items():
             if mentor_search and mentor_search.lower() not in mn.lower(): continue
             filtered_sessions = [s for s in mdata.get("sessions",[]) if session_passes_filters(s)]
             if filtered_sessions:
