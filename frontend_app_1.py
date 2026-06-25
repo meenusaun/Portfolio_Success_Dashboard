@@ -804,173 +804,204 @@ with tab_company:
             ("Finance",      "stream_support_finance",      "goal_finance",     "unlock_finance"),
         ]
 
-        # ── Per venture card ──────────────────────────
-        for vn, vdata in filtered_basics.items():
-            hub          = safe(vdata.get("hub"))
-            sprint_type  = safe(vdata.get("sprint_type"))
-            sprint_status= safe(vdata.get("sprint_status"))
-            startup_smb  = safe(vdata.get("startup_smb"))
-            program_cat  = safe(vdata.get("program_category"))
-            month_year   = safe(vdata.get("month_year"))
-            revenue_size = safe(vdata.get("size_revenue"))
-            revenue_fy   = safe(vdata.get("revenue_fy2425_26"))
+        # ── Helper: truncate long text for table cells ──
+        def trunc(v, n=120):
+            s = safe(v)
+            return s if len(s) <= n else s[:n] + "..."
 
-            with st.expander(
-                f"🏢 **{vn}**  ·  {hub}  ·  {sprint_type}  ·  "
-                f"{sprint_badge(sprint_status)}",
-                expanded=False
-            ):
-                # ── Header row ────────────────────────
-                st.markdown(
-                    f"<div style='background:linear-gradient(135deg,#6366f1,#8b5cf6);"
-                    f"border-radius:10px;padding:16px 20px;color:white;margin-bottom:16px'>"
-                    f"<div style='display:flex;justify-content:space-between;"
-                    f"align-items:center;flex-wrap:wrap;gap:12px'>"
-                    f"<div>"
-                    f"<div style='font-size:1.1rem;font-weight:700'>{vn}</div>"
-                    f"<div style='font-size:0.82rem;opacity:0.85;margin-top:4px'>"
-                    f"📍 {hub} &nbsp;·&nbsp; 🏃 {sprint_type} &nbsp;·&nbsp; "
-                    f"📅 {month_year} &nbsp;·&nbsp; {startup_smb} &nbsp;·&nbsp; {program_cat}"
-                    f"</div></div>"
-                    f"<div style='display:flex;gap:16px;text-align:center'>"
-                    + (f"<div><div style='font-size:0.7rem;opacity:0.8'>Revenue (Size)</div>"
-                       f"<div style='font-size:1.1rem;font-weight:700'>${revenue_size}M</div></div>"
-                       if revenue_size != "—" else "")
-                    + (f"<div><div style='font-size:0.7rem;opacity:0.8'>Revenue FY25-26</div>"
-                       f"<div style='font-size:1.1rem;font-weight:700'>${revenue_fy}M</div></div>"
-                       if revenue_fy != "—" else "")
-                    + f"</div></div></div>",
-                    unsafe_allow_html=True
-                )
+        def stream_badge_html(val):
+            v = safe(val)
+            if v == "—": return "<span style='color:#94a3b8'>—</span>"
+            color_map = {
+                "RED":                ("#fee2e2","#991b1b"),
+                "RED (DEEP SUPPORT)": ("#fee2e2","#991b1b"),
+                "AMBER":              ("#fef9c3","#854d0e"),
+                "DEEP SUPPORT":       ("#e0e7ff","#3730a3"),
+                "DEEP SUPPORT":       ("#e0e7ff","#3730a3"),
+                "GREEN":              ("#dcfce7","#166534"),
+            }
+            bg, fg = color_map.get(v.upper(), ("#f1f5f9","#475569"))
+            short = {"RED":"RED","AMBER":"AMB","DEEP SUPPORT":"DEEP",
+                     "RED (DEEP SUPPORT)":"RED+D","GREEN":"GRN"}.get(v.upper(), v[:4])
+            return (f"<span style='background:{bg};color:{fg};padding:1px 7px;"
+                    f"border-radius:10px;font-size:0.72rem;font-weight:700'>{short}</span>")
 
-                # ── Section 1: Existing vs New Venture ──
-                st.markdown("**📦 Existing Venture → New Venture**")
-                ev1, ev2, ev3, arrow, nv1, nv2, nv3 = st.columns([2, 2, 1.5, 0.3, 2, 2, 1.5])
+        TH = ("style='padding:8px 12px;text-align:left;color:#475569;"
+              "font-weight:600;font-size:0.78rem;background:#f1f5f9;"
+              "white-space:nowrap;border-bottom:2px solid #e2e8f0'")
+        TD = "style='padding:8px 12px;font-size:0.8rem;color:#334155;vertical-align:top;border-bottom:1px solid #f1f5f9'"
+        TDN = "style='padding:8px 12px;font-size:0.8rem;color:#334155;vertical-align:top;border-bottom:1px solid #f1f5f9;white-space:pre-line'"
 
-                with ev1:
-                    st.markdown(
-                        f"<div class='section-label'>Existing Product</div>"
-                        f"<div style='font-size:0.83rem;color:#334155;white-space:pre-line'>"
-                        f"{safe(vdata.get('existing_product'))}</div>",
-                        unsafe_allow_html=True
-                    )
-                with ev2:
-                    st.markdown(
-                        f"<div class='section-label'>Existing Market Segments</div>"
-                        f"<div style='font-size:0.83rem;color:#334155;white-space:pre-line'>"
-                        f"{safe(vdata.get('existing_market_segments'))}</div>",
-                        unsafe_allow_html=True
-                    )
-                with ev3:
-                    st.markdown(
-                        f"<div class='section-label'>Existing Geographies</div>"
-                        f"<div style='font-size:0.83rem;color:#334155;white-space:pre-line'>"
-                        f"{safe(vdata.get('existing_geographies'))}</div>",
-                        unsafe_allow_html=True
-                    )
-                with arrow:
-                    st.markdown(
-                        "<div style='text-align:center;font-size:1.5rem;margin-top:20px'>"
-                        "→</div>",
-                        unsafe_allow_html=True
-                    )
-                with nv1:
-                    st.markdown(
-                        f"<div class='section-label'>New Product</div>"
-                        f"<div style='font-size:0.83rem;color:#334155;white-space:pre-line'>"
-                        f"{safe(vdata.get('new_product'))}</div>",
-                        unsafe_allow_html=True
-                    )
-                with nv2:
-                    st.markdown(
-                        f"<div class='section-label'>New Market Segments</div>"
-                        f"<div style='font-size:0.83rem;color:#334155;white-space:pre-line'>"
-                        f"{safe(vdata.get('new_market_segments'))}</div>",
-                        unsafe_allow_html=True
-                    )
-                with nv3:
-                    st.markdown(
-                        f"<div class='section-label'>New Geographies</div>"
-                        f"<div style='font-size:0.83rem;color:#334155;white-space:pre-line'>"
-                        f"{safe(vdata.get('new_geographies'))}</div>",
-                        unsafe_allow_html=True
-                    )
+        ventures_to_show = list(filtered_basics.items())
 
-                # ── Incremental Impact ────────────────
-                incr_rev = safe(vdata.get("incremental_rev_3yr"))
-                incr_jobs = safe(vdata.get("incremental_jobs_3yr"))
-                if incr_rev != "—" or incr_jobs != "—":
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    ir1, ir2, _ = st.columns([2, 2, 6])
-                    if incr_rev != "—":
-                        try:
-                            ir1.metric("Incremental Revenue (3 Yr)", f"${float(incr_rev):.2f}M")
-                        except: ir1.metric("Incremental Revenue (3 Yr)", incr_rev)
-                    if incr_jobs != "—":
-                        try:
-                            ir2.metric("Incremental Jobs (3 Yr)", f"{int(float(incr_jobs)):,}")
-                        except: ir2.metric("Incremental Jobs (3 Yr)", incr_jobs)
+        # ════════════════════════════════════════════
+        # TABLE 1 — Company Overview
+        # ════════════════════════════════════════════
+        st.markdown("### 📋 Company Overview")
+        rows1 = ""
+        for vn, vdata in ventures_to_show:
+            rev_size = safe(vdata.get("size_revenue"))
+            rev_fy   = safe(vdata.get("revenue_fy2425_26"))
+            incr_rev = safe(vdata.get("incremental_rev_3yr"))
+            incr_job = safe(vdata.get("incremental_jobs_3yr"))
+            try: incr_rev_fmt = f"${float(incr_rev):.2f}M" if incr_rev != "—" else "—"
+            except: incr_rev_fmt = incr_rev
+            try: incr_job_fmt = f"{int(float(incr_job)):,}" if incr_job != "—" else "—"
+            except: incr_job_fmt = incr_job
 
-                st.divider()
+            sprint_st = safe(vdata.get("sprint_status"))
+            ss_colors = {"In Progress":("#dcfce7","#166534"),
+                         "Completed":  ("#e0e7ff","#3730a3"),
+                         "Not Started":("#fee2e2","#991b1b")}
+            ss_bg, ss_fg = ss_colors.get(sprint_st, ("#f1f5f9","#475569"))
+            ss_badge = (f"<span style='background:{ss_bg};color:{ss_fg};padding:1px 7px;"
+                        f"border-radius:10px;font-size:0.72rem;font-weight:600'>{sprint_st}</span>"
+                        if sprint_st != "—" else "—")
 
-                # ── Section 2: Stream Support ────────
-                st.markdown("**🔧 Stream Support Requirement**")
-                stream_cols = st.columns(6)
-                for idx, (label, support_key, _, _) in enumerate(STREAMS):
-                    with stream_cols[idx]:
-                        badge = stream_badge(vdata.get(support_key))
-                        st.markdown(
-                            f"<div style='text-align:center'>"
-                            f"<div class='section-label' style='text-align:center'>{label}</div>"
-                            f"<div style='margin-top:4px'>{badge}</div>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+            rows1 += f"""<tr>
+                <td {TD}><strong>{vn}</strong></td>
+                <td {TD}>{safe(vdata.get("hub"))}</td>
+                <td {TD}>{safe(vdata.get("startup_smb"))}</td>
+                <td {TD}>{safe(vdata.get("sprint_type"))}</td>
+                <td {TD}>{ss_badge}</td>
+                <td {TD}>{safe(vdata.get("program_category"))}</td>
+                <td {TD}>{safe(vdata.get("month_year"))}</td>
+                <td {TD}>{f"${rev_size}M" if rev_size != "—" else "—"}</td>
+                <td {TD}>{f"${rev_fy}M" if rev_fy != "—" else "—"}</td>
+                <td {TD}>{incr_rev_fmt}</td>
+                <td {TD}>{incr_job_fmt}</td>
+            </tr>"""
 
-                st.divider()
+        st.markdown(f"""<div style='overflow-x:auto'>
+        <table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>
+        <thead><tr>
+            <th {TH}>Venture</th><th {TH}>Hub</th><th {TH}>Type</th>
+            <th {TH}>Sprint Type</th><th {TH}>Sprint Status</th>
+            <th {TH}>Category</th><th {TH}>Month-Year</th>
+            <th {TH}>Revenue (Size)</th><th {TH}>Revenue FY25-26</th>
+            <th {TH}>Incr. Rev (3Yr)</th><th {TH}>Incr. Jobs (3Yr)</th>
+        </tr></thead><tbody>{rows1}</tbody></table></div>""",
+        unsafe_allow_html=True)
 
-                # ── Section 3: Goals ─────────────────
-                st.markdown("**🎯 Stream Goals (36 Months)**")
-                g_cols = st.columns(3)
-                for idx, (label, support_key, goal_key, _) in enumerate(STREAMS):
-                    goal = safe(vdata.get(goal_key))
-                    with g_cols[idx % 3]:
-                        badge = stream_badge(vdata.get(support_key))
-                        st.markdown(
-                            f"<div style='background:#ffffff;border:1px solid #e2e8f0;"
-                            f"border-radius:8px;padding:12px 14px;margin-bottom:10px;"
-                            f"min-height:90px'>"
-                            f"<div style='display:flex;justify-content:space-between;"
-                            f"align-items:center;margin-bottom:6px'>"
-                            f"<div style='font-weight:600;font-size:0.83rem;color:#1e293b'>"
-                            f"{label}</div>{badge}</div>"
-                            f"<div style='font-size:0.8rem;color:#475569;line-height:1.5'>"
-                            f"{goal}</div>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+        st.markdown("<br>", unsafe_allow_html=True)
 
-                # ── Section 4: Stream Unlocks ────────
-                has_unlocks = any(safe(vdata.get(uk)) != "—"
-                                  for _, _, _, uk in STREAMS)
-                if has_unlocks:
-                    st.divider()
-                    st.markdown("**🔓 Stream Unlocks**")
-                    u_cols = st.columns(3)
-                    for idx, (label, _, _, unlock_key) in enumerate(STREAMS):
-                        unlock = safe(vdata.get(unlock_key))
-                        if unlock == "—": continue
-                        with u_cols[idx % 3]:
-                            st.markdown(
-                                f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
-                                f"border-radius:8px;padding:12px 14px;margin-bottom:10px'>"
-                                f"<div style='font-weight:600;font-size:0.83rem;color:#1e293b;"
-                                f"margin-bottom:6px'>{label}</div>"
-                                f"<div style='font-size:0.79rem;color:#475569;line-height:1.6;"
-                                f"white-space:pre-line'>{unlock}</div>"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
+        # ════════════════════════════════════════════
+        # TABLE 2 — Existing vs New Venture
+        # ════════════════════════════════════════════
+        st.markdown("### 📦 Existing → New Venture")
+        rows2 = ""
+        for vn, vdata in ventures_to_show:
+            rows2 += f"""<tr>
+                <td {TD}><strong>{vn}</strong></td>
+                <td {TDN}>{trunc(vdata.get("existing_product"), 150)}</td>
+                <td {TDN}>{trunc(vdata.get("existing_market_segments"), 150)}</td>
+                <td {TDN}>{trunc(vdata.get("existing_geographies"), 100)}</td>
+                <td style='padding:8px 12px;text-align:center;font-size:1rem;
+                    vertical-align:middle;border-bottom:1px solid #f1f5f9;color:#6366f1'>→</td>
+                <td {TDN}>{trunc(vdata.get("new_product"), 150)}</td>
+                <td {TDN}>{trunc(vdata.get("new_market_segments"), 150)}</td>
+                <td {TDN}>{trunc(vdata.get("new_geographies"), 100)}</td>
+            </tr>"""
+
+        st.markdown(f"""<div style='overflow-x:auto'>
+        <table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>
+        <thead><tr>
+            <th {TH}>Venture</th>
+            <th {TH} style='background:#fef9c3'>Existing Product</th>
+            <th {TH} style='background:#fef9c3'>Existing Markets</th>
+            <th {TH} style='background:#fef9c3'>Existing Geographies</th>
+            <th {TH}></th>
+            <th {TH} style='background:#dcfce7'>New Product</th>
+            <th {TH} style='background:#dcfce7'>New Markets</th>
+            <th {TH} style='background:#dcfce7'>New Geographies</th>
+        </tr></thead><tbody>{rows2}</tbody></table></div>""",
+        unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ════════════════════════════════════════════
+        # TABLE 3 — Stream Support & Goals
+        # ════════════════════════════════════════════
+        st.markdown("### 🔧 Stream Support & Goals")
+        rows3 = ""
+        for vn, vdata in ventures_to_show:
+            gtm_b   = stream_badge_html(vdata.get("stream_support_gtm"))
+            prod_b  = stream_badge_html(vdata.get("stream_support_product"))
+            ops_b   = stream_badge_html(vdata.get("stream_support_operations"))
+            sc_b    = stream_badge_html(vdata.get("stream_support_supply_chain"))
+            hr_b    = stream_badge_html(vdata.get("stream_support_hr"))
+            fin_b   = stream_badge_html(vdata.get("stream_support_finance"))
+
+            rows3 += f"""<tr>
+                <td {TD}><strong>{vn}</strong></td>
+                <td style='padding:8px 12px;text-align:center;border-bottom:1px solid #f1f5f9'>{gtm_b}</td>
+                <td style='padding:8px 12px;text-align:center;border-bottom:1px solid #f1f5f9'>{prod_b}</td>
+                <td style='padding:8px 12px;text-align:center;border-bottom:1px solid #f1f5f9'>{ops_b}</td>
+                <td style='padding:8px 12px;text-align:center;border-bottom:1px solid #f1f5f9'>{sc_b}</td>
+                <td style='padding:8px 12px;text-align:center;border-bottom:1px solid #f1f5f9'>{hr_b}</td>
+                <td style='padding:8px 12px;text-align:center;border-bottom:1px solid #f1f5f9'>{fin_b}</td>
+                <td {TDN}>{trunc(vdata.get("goal_gtm"), 120)}</td>
+                <td {TDN}>{trunc(vdata.get("goal_product"), 120)}</td>
+                <td {TDN}>{trunc(vdata.get("goal_operations"), 120)}</td>
+                <td {TDN}>{trunc(vdata.get("goal_supply_chain"), 120)}</td>
+                <td {TDN}>{trunc(vdata.get("goal_people"), 120)}</td>
+                <td {TDN}>{trunc(vdata.get("goal_finance"), 120)}</td>
+            </tr>"""
+
+        st.markdown(f"""<div style='overflow-x:auto'>
+        <table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>
+        <thead>
+        <tr>
+            <th {TH} rowspan='2'>Venture</th>
+            <th {TH} colspan='6' style='text-align:center;border-bottom:1px solid #e2e8f0'>
+                Stream Support Requirement</th>
+            <th {TH} colspan='6' style='text-align:center;border-bottom:1px solid #e2e8f0'>
+                Stream Goals (36 Months)</th>
+        </tr>
+        <tr>
+            <th {TH}>GTM</th><th {TH}>Product</th><th {TH}>Operations</th>
+            <th {TH}>Supply Chain</th><th {TH}>HR</th><th {TH}>Finance</th>
+            <th {TH}>GTM Goal</th><th {TH}>Product Goal</th><th {TH}>Ops Goal</th>
+            <th {TH}>SC Goal</th><th {TH}>People Goal</th><th {TH}>Finance Goal</th>
+        </tr>
+        </thead><tbody>{rows3}</tbody></table></div>""",
+        unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ════════════════════════════════════════════
+        # TABLE 4 — Stream Unlocks
+        # ════════════════════════════════════════════
+        unlock_keys = ["unlock_gtm","unlock_product","unlock_operations",
+                       "unlock_supply_chain","unlock_people","unlock_finance"]
+        has_any_unlock = any(
+            safe(vdata.get(k)) != "—"
+            for _, vdata in ventures_to_show
+            for k in unlock_keys
+        )
+        if has_any_unlock:
+            st.markdown("### 🔓 Stream Unlocks")
+            rows4 = ""
+            for vn, vdata in ventures_to_show:
+                rows4 += f"""<tr>
+                    <td {TD}><strong>{vn}</strong></td>
+                    <td {TDN}>{trunc(vdata.get("unlock_gtm"), 150)}</td>
+                    <td {TDN}>{trunc(vdata.get("unlock_product"), 150)}</td>
+                    <td {TDN}>{trunc(vdata.get("unlock_operations"), 150)}</td>
+                    <td {TDN}>{trunc(vdata.get("unlock_supply_chain"), 150)}</td>
+                    <td {TDN}>{trunc(vdata.get("unlock_people"), 150)}</td>
+                    <td {TDN}>{trunc(vdata.get("unlock_finance"), 150)}</td>
+                </tr>"""
+
+            st.markdown(f"""<div style='overflow-x:auto'>
+            <table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>
+            <thead><tr>
+                <th {TH}>Venture</th>
+                <th {TH}>GTM Unlocks</th><th {TH}>Product Unlocks</th>
+                <th {TH}>Ops Unlocks</th><th {TH}>SC Unlocks</th>
+                <th {TH}>People Unlocks</th><th {TH}>Finance Unlocks</th>
+            </tr></thead><tbody>{rows4}</tbody></table></div>""",
+            unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════
 #  TAB 3: PORTFOLIO OVERVIEW
