@@ -26,7 +26,7 @@ ENV_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
 ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 
-SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
@@ -978,16 +978,11 @@ with tab_ventures:
             # ── Venture header banner ──────────────────
             st.markdown(
                 f"<div class='venture-header'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px'>"
+                f"<div style='display:flex;align-items:flex-start;flex-wrap:wrap;gap:12px'>"
                 f"<div>"
                 f"<div style='font-size:1.2rem;font-weight:700'>{vname}</div>"
                 f"<div style='font-size:0.83rem;opacity:0.85;margin-top:4px'>"
                 f"📍 {hub} &nbsp;·&nbsp; 👤 {vp} &nbsp;·&nbsp; 🏃 {sprint}</div>"
-                f"</div>"
-                f"<div style='text-align:right'>"
-                f"<div style='font-size:0.72rem;opacity:0.75;text-transform:uppercase;letter-spacing:0.06em'>Sprint Completion</div>"
-                f"<div style='font-size:1.8rem;font-weight:700'>{pct_num:.0f}%</div>"
-                f"<div style='font-size:0.78rem;opacity:0.75'>{bucket}</div>"
                 f"</div>"
                 f"</div></div>",
                 unsafe_allow_html=True
