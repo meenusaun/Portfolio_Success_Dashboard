@@ -1107,9 +1107,21 @@ with step3_tab:
     # Files in Sign off Journey Documents folder are already in common_text_sig
     @st.cache_data(show_spinner=False)
     def build_journey_lookup(common_text):
-        """Extract journey document text per venture from pre-loaded common docs."""
-        JOURNEY_FOLDER_LOWER = "sign off journey documents"
-        lookup = {}  # {filename: text}
+        """
+        Extract journey document text from pre-loaded common docs.
+        Matches files in:
+          - Sign off Journey Documents/ (any subfolder depth)
+          - JS1/, JS2/ subfolders inside it
+          - Any path containing 'sign off' or 'js1' or 'js2'
+        """
+        JOURNEY_MARKERS = [
+            "sign off journey documents",
+            "sign off journey",
+            "signoff journey",
+            "/js1/",
+            "/js2/",
+        ]
+        lookup = {}
         sections = common_text.split("=== FILE:")
         for section in sections:
             if not section.strip(): continue
@@ -1117,13 +1129,36 @@ with step3_tab:
             if header_end == -1: continue
             fpath = section[:header_end].strip()
             text  = section[header_end+3:].strip()
-            if JOURNEY_FOLDER_LOWER in fpath.lower() and text and len(text) > 100:
+            fpath_lower = fpath.lower()
+            if any(m in fpath_lower for m in JOURNEY_MARKERS) and text and len(text) > 100:
                 fname = fpath.split("/")[-1]
                 lookup[fname] = {"path": fpath, "text": text}
         return lookup
 
     journey_docs = build_journey_lookup(st.session_state["common_text_sig"])
-    st.info(f"📁 Found {len(journey_docs)} Journey Documents in Common Documents")
+
+    # ── Debug: show ALL paths in common_text_sig to diagnose missing folders ──
+    with st.expander("🔍 Debug — All paths loaded in Common Documents (Step 0)"):
+        all_paths = []
+        for section in st.session_state["common_text_sig"].split("=== FILE:"):
+            if not section.strip(): continue
+            header_end = section.find("===")
+            if header_end == -1: continue
+            fpath = section[:header_end].strip()
+            if fpath: all_paths.append(fpath)
+        if all_paths:
+            st.caption(f"Total files loaded: {len(all_paths)}")
+            journey_paths = [p for p in all_paths if "journey" in p.lower() or "js1" in p.lower() or "js2" in p.lower() or "sign off" in p.lower()]
+            if journey_paths:
+                st.markdown("**Journey-related paths found:**")
+                for p in journey_paths: st.code(p)
+            else:
+                st.warning("No journey-related paths found. Showing all paths:")
+                for p in sorted(all_paths): st.caption(p)
+        else:
+            st.warning("No paths found — Step 0 may not have completed.")
+
+    st.info(f"📁 Found {len(journey_docs)} Journey Documents matching 'Sign off Journey Documents' folder")
 
     if journey_docs:
         with st.expander("📋 Journey Documents found"):
