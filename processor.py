@@ -569,3 +569,63 @@ def parse_tracker_files(session_tracker_bytes, feedback_tracker_bytes):
             key=lambda s: s.get("meeting_date",""), reverse=True)
 
     return mentor_insights
+
+
+def extract_journey_document_data(client, vname, journey_text):
+    """
+    Extract structured venture data from a Journey Document (PDF/Word).
+    Returns a dict with all Company Basics fields.
+    Uses claude-haiku for cost efficiency.
+    """
+    if not journey_text or len(journey_text.strip()) < 100:
+        return {}
+
+    prompt = f"""Extract structured data for venture: {vname}
+
+From the Journey Document below, extract the following fields.
+Return ONLY a JSON object. Use null for any field not found.
+
+{{
+  "existing_product": "current products/services offered",
+  "existing_market_segments": "current customer segments served",
+  "existing_geographies": "current geographies of operation",
+  "new_product": "new products/services planned",
+  "new_market_segments": "new market segments to be targeted",
+  "new_geographies": "new geographies to enter",
+  "incremental_rev_3yr": "incremental revenue target over 3 years (number only, in $ millions)",
+  "incremental_jobs_3yr": "incremental jobs to be created over 3 years (number only)",
+  "goal_gtm": "GTM / sales / marketing goal",
+  "goal_product": "product development goal",
+  "goal_operations": "operations goal",
+  "goal_supply_chain": "supply chain goal",
+  "goal_people": "people / HR goal",
+  "goal_finance": "finance goal",
+  "stream_support_gtm": "GTM support needed: RED/AMBER/GREEN/DEEP SUPPORT or null",
+  "stream_support_product": "product support needed: RED/AMBER/GREEN/DEEP SUPPORT or null",
+  "stream_support_operations": "operations support needed: RED/AMBER/GREEN/DEEP SUPPORT or null",
+  "stream_support_supply_chain": "supply chain support needed: RED/AMBER/GREEN/DEEP SUPPORT or null",
+  "stream_support_hr": "HR/people support needed: RED/AMBER/GREEN/DEEP SUPPORT or null",
+  "stream_support_finance": "finance support needed: RED/AMBER/GREEN/DEEP SUPPORT or null",
+  "unlock_gtm": "GTM stream unlock description",
+  "unlock_product": "product stream unlock description",
+  "unlock_operations": "operations stream unlock description",
+  "unlock_supply_chain": "supply chain stream unlock description",
+  "unlock_people": "people stream unlock description",
+  "unlock_finance": "finance stream unlock description"
+}}
+
+--- JOURNEY DOCUMENT ---
+{journey_text[:80000]}"""
+
+    try:
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw  = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
+        data = json.loads(raw)
+        # Clean nulls
+        return {k: v for k, v in data.items() if v is not None and str(v).strip() not in ["","null","None"]}
+    except Exception as e:
+        return {"_error": str(e)}

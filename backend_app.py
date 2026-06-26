@@ -358,22 +358,30 @@ def extract_transcripts_from_common(common_text):
     """
     Parse already-loaded common_text and return only sections
     that came from files inside the Session Transcripts folder.
+
+    Now uses full SharePoint path stored in FILE header (since Step 0 fix)
+    so any file inside Session Transcripts/ is included regardless of filename.
     Returns list of {"filename": str, "text": str}.
     """
+    TRANSCRIPT_FOLDER_LOWER = "session transcripts"
     results = []
     sections = common_text.split("=== FILE:")
     for section in sections:
         if not section.strip(): continue
-        # Section header format: " filename.ext ===\ntext..."
         header_end = section.find("===")
         if header_end == -1: continue
-        fname = section[:header_end].strip()
+        fpath = section[:header_end].strip()
         text  = section[header_end+3:].strip()
-        # Only include files that were inside Session Transcripts folder
-        # (filename contains "transcript" keyword or was stored with that path hint)
-        if "transcript" in fname.lower() or "session" in fname.lower():
-            if text and len(text) > 50:
-                results.append({"filename": fname, "text": text})
+        # Match by folder path (full path now stored) OR filename keyword fallback
+        in_transcript_folder = TRANSCRIPT_FOLDER_LOWER in fpath.lower()
+        fname_match = ("transcript" in fpath.lower().split("/")[-1] or
+                       "session"    in fpath.lower().split("/")[-1])
+        if (in_transcript_folder or fname_match) and text and len(text) > 50:
+            results.append({
+                "filename": fpath.split("/")[-1],  # just the filename for display
+                "path":     fpath,
+                "text":     text
+            })
     return results
 
 def get_transcript_for_venture(vname, all_transcripts):
@@ -468,9 +476,10 @@ def get_attendance_for_venture(vname, attendance_data):
 #  MAIN UI — Two generation steps
 # ══════════════════════════════════════════════════════
 
-step1_tab, step2_tab, status_tab = st.tabs([
+step1_tab, step2_tab, step3_tab, status_tab = st.tabs([
     "📊 Step 1 — Signals Repository",
     "🎙 Step 2 — Feedback Repository",
+    "📄 Step 3 — Journey Documents",
     "📁 Status & Downloads"
 ])
 
@@ -526,14 +535,15 @@ with step1_tab:
             file_counter   = [0]
             texts_collected = []
 
-            def process_file_progress(fname, content_bytes=None):
+            def process_file_progress(fname, fpath="", content_bytes=None):
                 ext = Path(fname).suffix.lower()
                 if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
                 if "journey_accelerate_portfolio" in fname.lower(): return
                 try:
                     text = extract_text_bytes(content_bytes, fname)
                     if text and len(text) >= 50:
-                        texts_collected.append(f"=== FILE: {fname} ===\n{text}")
+                        # Store FULL PATH in header so folder-based filtering works
+                        texts_collected.append(f"=== FILE: {fpath or fname} ===\n{text}")
                         file_counter[0] += 1
                         status_box.caption(f"📄 Loaded {file_counter[0]} files... latest: {fname[:60]}")
                 except: pass
@@ -563,8 +573,9 @@ with step1_tab:
                         prog_pre.progress((fi+1)/max(total_files,1),
                                           text=f"Reading {fi+1}/{total_files}: {fname[:50]}")
                         try:
-                            content = sp_pre.download_file(fpath)
-                            process_file_progress(fname, content_bytes=content)
+                            content_dl = sp_pre.download_file(fpath)
+                            # Pass full path so transcript folder filtering works
+                            process_file_progress(fname, fpath=fpath, content_bytes=content_dl)
                         except: pass
                 except Exception as e:
                     st.error(f"Common docs load error: {e}")
@@ -1042,6 +1053,238 @@ with step2_tab:
                 st.warning("⚠️ Mentor insights not yet parsed — upload tracker files in Section A first.")
             if done_count_f == 0:
                 st.info("ℹ️ No venture transcripts processed — Section B is optional.")
+
+# ══════════════════════════════════════════════════════
+#  STEP 3: JOURNEY DOCUMENTS
+# ══════════════════════════════════════════════════════
+with step3_tab:
+    st.markdown("### 📄 Extract Journey Document Data")
+    st.caption(
+        "Reads Sign off Journey Documents from Common Documents → "
+        "Extracts structured venture data → Stores in signals_repository.json"
+    )
+
+    if not client:
+        st.error("❌ Anthropic API key required."); st.stop()
+
+    JOURNEY_FOLDER  = f"{COMMON_FOLDER}/Sign off Journey Documents"
+    JOURNEY_KEY     = "journey_repo_results"
+    VALID_EXTS      = [".pdf", ".docx", ".doc"]
+
+    if JOURNEY_KEY not in st.session_state:
+        st.session_state[JOURNEY_KEY] = {}
+
+    journey_results = st.session_state[JOURNEY_KEY]
+    done_j = sum(1 for v in journey_results.values() if v.get("status") == "done")
+
+    # ── Controls ──────────────────────────────────────
+    jc1, jc2, jc3 = st.columns([2, 1, 1])
+    with jc1:
+        j_venture_filter = st.multiselect(
+            "Ventures to process (leave empty = all)",
+            options=ventures_list, key="j_filter"
+        )
+    with jc2:
+        j_batch_size = st.selectbox("Batch size", [5, 10, 15, 20],
+                                     index=1, key="j_batch_size")
+    with jc3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        run_all_j = st.button("▶ Extract All", key="run_all_journey",
+                               use_container_width=True)
+
+    j_target  = j_venture_filter if j_venture_filter else ventures_list
+    j_batches = [j_target[i:i+j_batch_size]
+                 for i in range(0, len(j_target), j_batch_size)]
+    st.caption(f"{len(j_target)} ventures · {len(j_batches)} batches")
+    st.divider()
+
+    # Pre-load: check if common docs already loaded
+    if "common_text_sig" not in st.session_state:
+        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first.")
+        st.stop()
+
+    # Build journey doc lookup from pre-loaded common docs
+    # Files in Sign off Journey Documents folder are already in common_text_sig
+    @st.cache_data(show_spinner=False)
+    def build_journey_lookup(common_text):
+        """Extract journey document text per venture from pre-loaded common docs."""
+        JOURNEY_FOLDER_LOWER = "sign off journey documents"
+        lookup = {}  # {filename: text}
+        sections = common_text.split("=== FILE:")
+        for section in sections:
+            if not section.strip(): continue
+            header_end = section.find("===")
+            if header_end == -1: continue
+            fpath = section[:header_end].strip()
+            text  = section[header_end+3:].strip()
+            if JOURNEY_FOLDER_LOWER in fpath.lower() and text and len(text) > 100:
+                fname = fpath.split("/")[-1]
+                lookup[fname] = {"path": fpath, "text": text}
+        return lookup
+
+    journey_docs = build_journey_lookup(st.session_state["common_text_sig"])
+    st.info(f"📁 Found {len(journey_docs)} Journey Documents in Common Documents")
+
+    if journey_docs:
+        with st.expander("📋 Journey Documents found"):
+            for fname in sorted(journey_docs.keys()):
+                st.caption(f"📄 {fname}")
+
+    st.divider()
+
+    def find_journey_doc(vname, journey_docs):
+        """Match venture name to journey document by filename or content."""
+        from difflib import SequenceMatcher
+        vname_lower = vname.lower()
+        vwords = [w for w in vname_lower.split() if len(w) > 3]
+
+        # Match by filename
+        for fname, doc in journey_docs.items():
+            fl = fname.lower()
+            if vname_lower in fl: return doc["text"]
+            if any(w in fl for w in vwords): return doc["text"]
+
+        # Match by content (first 1000 chars)
+        for fname, doc in journey_docs.items():
+            if vname_lower in doc["text"].lower()[:1000]:
+                return doc["text"]
+        return ""
+
+    for bi, batch in enumerate(j_batches):
+        batch_done = sum(1 for v in batch
+                         if journey_results.get(v,{}).get("status") == "done")
+        icon = "✅" if batch_done == len(batch) else                ("🔄" if batch_done > 0 else "⬜")
+        with st.expander(
+            f"{icon} Batch {bi+1}  —  {batch_done}/{len(batch)} done  —  "
+            f"{', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"
+        ):
+            for vn in batch:
+                jr = journey_results.get(vn, {})
+                js = jr.get("status", "pending")
+                ic = {"done":"✅","error":"❌","no_doc":"⚠️"}.get(js,"⬜")
+                fields_found = len([k for k,v in jr.items()
+                                    if k not in ["status","venture_name","processed_at","_error"]
+                                    and v])
+                st.caption(f"{ic} {vn}  ·  "
+                           f"{'No document found' if js=='no_doc' else f'{fields_found} fields extracted' if js=='done' else 'Not processed'}")
+
+            st.markdown("")
+            run_j_btn   = st.button(f"▶ Run Batch {bi+1}", key=f"run_j_batch_{bi}")
+            should_run_j = run_j_btn or run_all_j
+
+            if should_run_j:
+                prog_j = st.progress(0, text=f"Starting batch {bi+1}...")
+                for vi, vname in enumerate(batch):
+                    if journey_results.get(vname,{}).get("status") == "done":
+                        prog_j.progress((vi+1)/len(batch),
+                                        text=f"⚡ Skipping {vname}")
+                        continue
+
+                    prog_j.progress(vi/len(batch),
+                                    text=f"Processing {vname} ({vi+1}/{len(batch)})...")
+
+                    # Find journey doc
+                    doc_text = find_journey_doc(vname, journey_docs)
+                    if not doc_text:
+                        journey_results[vname] = {
+                            "status": "no_doc",
+                            "venture_name": vname,
+                            "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        }
+                        st.session_state[JOURNEY_KEY] = journey_results
+                        continue
+
+                    from processor import extract_journey_document_data
+                    extracted = extract_journey_document_data(client, vname, doc_text)
+
+                    journey_results[vname] = {
+                        "status":       "done" if not extracted.get("_error") else "error",
+                        "venture_name": vname,
+                        "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        **extracted
+                    }
+                    st.session_state[JOURNEY_KEY] = journey_results
+
+                prog_j.progress(1.0, text=f"✅ Batch {bi+1} complete!")
+                st.rerun()
+
+    # ── Download ──────────────────────────────────────
+    st.divider()
+    done_j = sum(1 for v in journey_results.values() if v.get("status") == "done")
+    no_doc = sum(1 for v in journey_results.values() if v.get("status") == "no_doc")
+    st.markdown(f"**{done_j} extracted · {no_doc} no document found · "
+                f"{len(ventures_list)-done_j-no_doc} pending**")
+
+    if done_j > 0:
+        # Merge journey data into signals repository if it exists
+        sig_results = st.session_state.get("sig_repo_results", {})
+
+        # Build download payload — standalone journey repository
+        journey_payload = {
+            "generated_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "venture_count": done_j,
+            "ventures":      {
+                vn: vr for vn, vr in journey_results.items()
+                if vr.get("status") == "done"
+            }
+        }
+
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.markdown("**💾 Download journey_repository.json**")
+            st.download_button(
+                "⬇️ Download journey_repository.json",
+                data=json.dumps(journey_payload, indent=2, default=str),
+                file_name="journey_repository.json",
+                mime="application/json",
+            )
+            journey_repo_path = f"{REPO_FOLDER}/journey_repository.json"
+            st.caption(f"Upload to SharePoint: `{journey_repo_path}`")
+
+        with dl2:
+            if sig_results:
+                # Merge journey data into signals repository
+                merged_sig = dict(st.session_state.get("sig_repo_results", {}))
+                for vn, jr in journey_results.items():
+                    if vn in merged_sig and jr.get("status") == "done":
+                        merged_sig[vn]["journey_data"] = {
+                            k: v for k, v in jr.items()
+                            if k not in ["status","venture_name","processed_at"]
+                        }
+
+                # Rebuild signals payload with journey data
+                records = st.session_state.get("sig_repo_records", [])
+                save_payload_merged = {
+                    "generated_at":   datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                    "venture_count":  len([v for v in merged_sig.values()
+                                           if v.get("status") == "done"]),
+                    "records":        records,
+                    "venture_summary": {
+                        vn: {
+                            **{k: vr.get(k) for k in [
+                                "venture_name","hub","venture_partner","sprint",
+                                "overall_rag","momentum_rag","investment_rag",
+                                "momentum_reason","investment_reason",
+                                "momentum_score","investment_score",
+                                "signals","att_sessions","att_dates",
+                                "sources_used","processed_at"
+                            ] if vr.get(k) is not None},
+                            "journey_data": vr.get("journey_data", {}),
+                        }
+                        for vn, vr in merged_sig.items()
+                        if vr.get("status") == "done"
+                    }
+                }
+                st.markdown("**💾 Download merged signals_repository.json**")
+                st.download_button(
+                    "⬇️ Download signals_repository.json (with journey data)",
+                    data=json.dumps(save_payload_merged, indent=2, default=str),
+                    file_name="signals_repository.json",
+                    mime="application/json",
+                )
+                st.caption("Includes journey data merged into signals repository")
+            else:
+                st.info("Run Step 1 first to also merge journey data into signals repository.")
 
 # ══════════════════════════════════════════════════════
 #  STATUS TAB
