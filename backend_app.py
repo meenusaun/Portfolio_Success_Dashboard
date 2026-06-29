@@ -1118,6 +1118,9 @@ with step3_tab:
             "sign off journey documents",
             "sign off journey",
             "signoff journey",
+            "final journey reports",
+            "journey reports ratified",
+            "ratified by vp",
             "/js1/",
             "/js2/",
         ]

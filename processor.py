@@ -720,6 +720,10 @@ def synthesise_value_delivered(client, signals_repo, feedback_repo, company_basi
     prompt = f"""You are analysing a portfolio of {total_ventures} ventures in an accelerator program.
 Based on the data below, extract and synthesise portfolio-level insights.
 
+CRITICAL: Return ONLY valid JSON. No markdown, no backticks, no explanatory text.
+Use only double quotes for strings. Do not include newlines or tabs inside string values — use spaces instead.
+Escape any double quotes inside string values with backslash.
+
 Return ONLY a JSON object with this exact structure:
 {{
   "jobs_2026": {{
@@ -781,8 +785,57 @@ For problems_solved, identify 5-8 distinct problem categories actually resolved 
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}]
         )
-        raw  = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
-        data = json.loads(raw)
+        raw = resp.content[0].text.strip()
+
+        # Strip markdown fences
+        raw = re.sub(r"```json|```", "", raw).strip()
+
+        # Find JSON object boundaries — extract only the JSON part
+        start = raw.find("{")
+        end   = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return None, "No JSON object found in response"
+        raw = raw[start:end]
+
+        # Fix common JSON issues: unescaped newlines inside strings
+        # Replace literal newlines inside string values with \n
+        def fix_json_string(s):
+            result = []
+            in_string = False
+            escape_next = False
+            for ch in s:
+                if escape_next:
+                    result.append(ch)
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    escape_next = True
+                    result.append(ch)
+                    continue
+                if ch == '"' and not escape_next:
+                    in_string = not in_string
+                    result.append(ch)
+                    continue
+                if in_string and ch == "\n":
+                    result.append("\\n")
+                    continue
+                if in_string and ch == "\t":
+                    result.append("\\t")
+                    continue
+                result.append(ch)
+            return "".join(result)
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            raw_fixed = fix_json_string(raw)
+            try:
+                data = json.loads(raw_fixed)
+            except json.JSONDecodeError as je:
+                # Last resort: use ast.literal_eval won't work for JSON
+                # Try to extract partial data
+                return None, f"JSON parse error: {je}. Raw (first 300 chars): {raw[:300]}"
+
         data["total_ventures"]  = total_ventures
         data["total_sessions"]  = total_sessions
         data["hiring_signals"]  = len(hiring_signals)
