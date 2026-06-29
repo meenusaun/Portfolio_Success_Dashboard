@@ -566,9 +566,10 @@ if not repo_loaded:
     st.stop()
 
 # ── main tabs ──────────────────────────────────────────
-tab_definitions, tab_company, tab_overview, tab_ventures, tab_mentors, tab_value = st.tabs([
+tab_definitions, tab_company, tab_scores, tab_overview, tab_ventures, tab_mentors, tab_value = st.tabs([
     "📖  How It Works",
     "🏢  Company Basics",
+    "🎯  Company & Score",
     "📊  Portfolio Overview",
     "🏢  Venture Cards",
     "👥  Mentor Insights",
@@ -1042,6 +1043,158 @@ with tab_company:
                                 unsafe_allow_html=True)
         else:
             st.info("👆 Click any row in the table above to view venture detail.")
+
+
+# ══════════════════════════════════════════════════════
+#  TAB: COMPANY & SCORE
+# ══════════════════════════════════════════════════════
+with tab_scores:
+    st.title("🎯 Company & Score")
+    st.divider()
+
+    if not signals_repo:
+        st.warning(
+            "Signals repository not found. "
+            "Run Backend → Step 1 and upload signals_repository.json to SharePoint."
+        )
+    else:
+        vsummary = signals_repo.get("venture_summary", {})
+
+        # ── Filters ───────────────────────────────────
+        f1, f2, f3, f4 = st.columns(4)
+        cs_search  = f1.text_input("🔍 Search", key="cs_search")
+        rag_opts   = ["All", "🟢 Green", "🟡 Amber", "🔴 Red", "⚪ ZERO"]
+        cs_overall = f2.selectbox("Overall RAG", rag_opts, key="cs_overall")
+        cs_mom     = f3.selectbox("Momentum RAG", rag_opts, key="cs_mom")
+        cs_inv     = f4.selectbox("Investment RAG", rag_opts, key="cs_inv")
+
+        RAG_EMOJI  = {"Green":"🟢","Amber":"🟡","Red":"🔴","ZERO":"⚪","Unknown":"⚪"}
+        RAG_COLOR  = {
+            "Green":  ("#dcfce7","#166534"),
+            "Amber":  ("#fef9c3","#854d0e"),
+            "Red":    ("#fee2e2","#991b1b"),
+            "ZERO":   ("#f1f5f9","#64748b"),
+            "Unknown":("#f1f5f9","#64748b"),
+        }
+
+        def rag_cell(rag):
+            emoji  = RAG_EMOJI.get(rag,"⚪")
+            bg, fg = RAG_COLOR.get(rag,("#f1f5f9","#64748b"))
+            return (f"<span style='background:{bg};color:{fg};padding:3px 12px;"
+                    f"border-radius:20px;font-weight:700;font-size:0.8rem;"
+                    f"white-space:nowrap'>{emoji} {rag}</span>")
+
+        def score_cell(score):
+            try:
+                s = int(score)
+                color = ("#16a34a" if s >= 8 else
+                         "#d97706" if s >= 5 else
+                         "#dc2626" if s >= 1 else "#94a3b8")
+                return (f"<span style='font-weight:800;font-size:1rem;"
+                        f"color:{color}'>{s}/10</span>")
+            except: return "—"
+
+        rows = []
+        rag_order = {"Red":0,"Amber":1,"Green":2,"ZERO":3,"Unknown":4}
+
+        for vn, vdata in vsummary.items():
+            overall  = vdata.get("overall_rag","ZERO")
+            m_rag    = vdata.get("momentum_rag","ZERO")
+            i_rag    = vdata.get("investment_rag","ZERO")
+            m_reason = vdata.get("momentum_reason","—")
+            i_reason = vdata.get("investment_reason","—")
+            score    = vdata.get("momentum_score",0)
+            hub      = vdata.get("hub","—")
+            vp       = vdata.get("venture_partner","—")
+
+            if cs_search and cs_search.lower() not in vn.lower(): continue
+            if cs_overall != "All" and overall != cs_overall.split(" ",1)[1]: continue
+            if cs_mom     != "All" and m_rag   != cs_mom.split(" ",1)[1]:     continue
+            if cs_inv     != "All" and i_rag   != cs_inv.split(" ",1)[1]:     continue
+
+            if overall == "Green":
+                note = "Strong momentum and investment — sprint on track"
+            elif overall == "Amber":
+                note = "Partial progress — needs follow-up to unlock full potential"
+            elif overall == "Red":
+                note = "At risk — immediate intervention recommended"
+            else:
+                note = "Insufficient data — prioritise document collection"
+
+            rows.append({
+                "vn":vn,"hub":hub,"vp":vp,
+                "overall":overall,"m_rag":m_rag,"i_rag":i_rag,
+                "m_reason":m_reason,"i_reason":i_reason,
+                "score":score,"note":note,
+            })
+
+        rows.sort(key=lambda r: rag_order.get(r["overall"],4))
+        st.caption(f"{len(rows)} ventures · sorted by RAG (Red first)")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        TH = ("style='padding:9px 14px;text-align:left;color:#475569;"
+              "font-weight:600;font-size:0.78rem;background:#f1f5f9;"
+              "white-space:nowrap;border-bottom:2px solid #e2e8f0'")
+        TD = ("style='padding:9px 14px;font-size:0.8rem;color:#334155;"
+              "vertical-align:top;border-bottom:1px solid #f1f5f9'")
+        TDW = ("style='padding:9px 14px;font-size:0.8rem;color:#475569;"
+               "vertical-align:top;border-bottom:1px solid #f1f5f9;max-width:220px'")
+
+        rows_html = ""
+        for r in rows:
+            rows_html += (
+                f"<tr>"
+                f"<td {TD}><strong>{r['vn']}</strong>"
+                f"<div style='font-size:0.73rem;color:#94a3b8;margin-top:2px'>"
+                f"{r['hub']} · {r['vp']}</div></td>"
+                f"<td {TD} style='text-align:center'>{rag_cell(r['m_rag'])}</td>"
+                f"<td {TDW}>{r['m_reason']}</td>"
+                f"<td {TD} style='text-align:center'>{rag_cell(r['i_rag'])}</td>"
+                f"<td {TDW}>{r['i_reason']}</td>"
+                f"<td {TD} style='text-align:center'>{score_cell(r['score'])}</td>"
+                f"<td {TD} style='text-align:center'>{rag_cell(r['overall'])}</td>"
+                f"<td {TDW}>{r['note']}</td>"
+                f"</tr>"
+            )
+
+        st.markdown(
+            f"<div style='overflow-x:auto;max-height:600px;border:1px solid #e2e8f0;"
+            f"border-radius:10px;overflow-y:auto'>"
+            f"<table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>"
+            f"<thead><tr>"
+            f"<th {TH}>Company</th>"
+            f"<th {TH}>Sprint Momentum RAG</th>"
+            f"<th {TH}>Momentum Reason</th>"
+            f"<th {TH}>Self Investment RAG</th>"
+            f"<th {TH}>Investment Reason</th>"
+            f"<th {TH}>Score</th>"
+            f"<th {TH}>Overall RAG</th>"
+            f"<th {TH}>Note on Overall Score</th>"
+            f"</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            f"</table></div>",
+            unsafe_allow_html=True
+        )
+
+        # ── Download CSV ──────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        def esc(v): return f'"{str(v).replace(chr(34), chr(39))}"' 
+        csv_lines = ["Company,Hub,Venture Partner,Momentum RAG,Momentum Reason,"
+                     "Investment RAG,Investment Reason,Score,Overall RAG,Note"]
+        for r in rows:
+            csv_lines.append(
+                f"{esc(r['vn'])},{esc(r['hub'])},{esc(r['vp'])},"
+                f"{esc(r['m_rag'])},{esc(r['m_reason'])},"
+                f"{esc(r['i_rag'])},{esc(r['i_reason'])},"
+                f"{esc(r['score'])},{esc(r['overall'])},{esc(r['note'])}"
+            )
+        st.download_button(
+            "⬇️ Download as CSV",
+            data="\n".join(csv_lines),
+            file_name="company_scores.csv",
+            mime="text/csv",
+            key="cs_download"
+        )
 
 with tab_overview:
     st.title("📊 Portfolio Overview")
