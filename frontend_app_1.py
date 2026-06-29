@@ -390,12 +390,48 @@ def compute_rag_from_signals(signals):
     all_sigs  = m_sigs + i_sigs
     _, p_nps, p_g, p_a, p_r, p_tot = _nps_from_signals(all_sigs)
 
+    # Overall note — formula-based, zero API cost
+    all_g   = m_g + i_g
+    all_a   = m_a + i_a
+    all_r   = m_r + i_r
+    all_tot = m_tot + i_tot
+    overall_nps = (
+        round(all_g/all_tot*100) - round(all_r/all_tot*100)
+    ) if all_tot else 0
+
+    if overall == "Green":
+        overall_note = (
+            f"Signal NPS {overall_nps:+d} from {all_tot} signals "
+            f"({all_g} Green, {all_a} Amber, {all_r} Red). "
+            f"Founder actively progressing on sprint with concrete actions and investment committed."
+        )
+    elif overall == "Amber":
+        overall_note = (
+            f"Signal NPS {overall_nps:+d} from {all_tot} signals "
+            f"({all_g} Green, {all_a} Amber, {all_r} Red). "
+            f"Some positive actions taken but sprint progress is partial or delayed. "
+            f"Follow-up recommended to unblock momentum."
+        )
+    elif overall == "Red":
+        overall_note = (
+            f"Signal NPS {overall_nps:+d} from {all_tot} signals "
+            f"({all_g} Green, {all_a} Amber, {all_r} Red). "
+            f"Founder disengaged or not investing in sprint. "
+            f"Immediate intervention recommended."
+        )
+    else:
+        overall_note = (
+            "No signals extracted from available documents. "
+            "Prioritise document collection or venture re-engagement."
+        )
+
     return {
         "overall_rag":       overall,
         "momentum_rag":      m_rag,
         "investment_rag":    i_rag,
         "momentum_reason":   _reason(m_rag, m_nps, m_g, m_a, m_r, m_tot, "momentum"),
         "investment_reason": _reason(i_rag, i_nps, i_g, i_a, i_r, i_tot, "investment"),
+        "overall_note":      overall_note,
         "momentum_score":    score,
         "investment_score":  score,
         "momentum_nps":      m_nps,  "investment_nps":   i_nps,
@@ -1105,6 +1141,7 @@ with tab_scores:
             i_rag    = vdata.get("investment_rag","ZERO")
             m_reason = vdata.get("momentum_reason","—")
             i_reason = vdata.get("investment_reason","—")
+            note     = vdata.get("overall_note","—")
             score    = vdata.get("momentum_score",0)
             hub      = vdata.get("hub","—")
             vp       = vdata.get("venture_partner","—")
@@ -1113,15 +1150,6 @@ with tab_scores:
             if cs_overall != "All" and overall != cs_overall.split(" ",1)[1]: continue
             if cs_mom     != "All" and m_rag   != cs_mom.split(" ",1)[1]:     continue
             if cs_inv     != "All" and i_rag   != cs_inv.split(" ",1)[1]:     continue
-
-            if overall == "Green":
-                note = "Strong momentum and investment — sprint on track"
-            elif overall == "Amber":
-                note = "Partial progress — needs follow-up to unlock full potential"
-            elif overall == "Red":
-                note = "At risk — immediate intervention recommended"
-            else:
-                note = "Insufficient data — prioritise document collection"
 
             rows.append({
                 "vn":vn,"hub":hub,"vp":vp,
@@ -1134,53 +1162,138 @@ with tab_scores:
         st.caption(f"{len(rows)} ventures · sorted by RAG (Red first)")
         st.markdown("<br>", unsafe_allow_html=True)
 
+        # ── Dialog for signals ────────────────────────
+        @st.dialog("Signals Detail", width="large")
+        def show_signals_dialog(vname, signal_type):
+            sigs = venture_signals.get(vname, {})
+            sig_list = sigs.get(signal_type, [])
+            st.markdown(
+                f"**{vname}** — "
+                f"{'🏃 Sprint Momentum' if signal_type=='momentum' else '💰 Self Investment'} Signals"
+            )
+            if not sig_list:
+                st.info("No signals found for this venture.")
+                return
+            # Group by category
+            for cat, emoji, bg, fg in [
+                ("GREEN","🟢","#dcfce7","#166534"),
+                ("AMBER","🟡","#fef9c3","#854d0e"),
+                ("RED",  "🔴","#fee2e2","#991b1b"),
+            ]:
+                cat_sigs = [s for s in sig_list if s.get("category","GREEN") == cat]
+                if not cat_sigs: continue
+                st.markdown(
+                    f"<div style='background:{bg};color:{fg};padding:4px 12px;"
+                    f"border-radius:8px;font-weight:700;font-size:0.82rem;"
+                    f"margin:10px 0 6px'>{emoji} {cat} — {len(cat_sigs)} signal(s)</div>",
+                    unsafe_allow_html=True
+                )
+                for s in cat_sigs:
+                    st.markdown(
+                        f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
+                        f"border-radius:8px;padding:10px 14px;margin-bottom:6px'>"
+                        f"<div style='font-weight:600;font-size:0.83rem;color:#1e293b'>"
+                        f"{s.get('type','')}</div>"
+                        f"<div style='font-size:0.8rem;color:#475569;margin-top:4px'>"
+                        f"{s.get('evidence','')}</div>"
+                        f"<div style='font-size:0.72rem;color:#94a3b8;margin-top:4px'>"
+                        f"📄 {s.get('source','')}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+
+        # Track which dialog to open
+        if "cs_dialog_venture" not in st.session_state:
+            st.session_state["cs_dialog_venture"] = None
+            st.session_state["cs_dialog_type"]    = None
+
+        if st.session_state["cs_dialog_venture"]:
+            show_signals_dialog(
+                st.session_state["cs_dialog_venture"],
+                st.session_state["cs_dialog_type"]
+            )
+            st.session_state["cs_dialog_venture"] = None
+            st.session_state["cs_dialog_type"]    = None
+
+        # ── Table: one row per venture ────────────────
         TH = ("style='padding:9px 14px;text-align:left;color:#475569;"
               "font-weight:600;font-size:0.78rem;background:#f1f5f9;"
               "white-space:nowrap;border-bottom:2px solid #e2e8f0'")
         TD = ("style='padding:9px 14px;font-size:0.8rem;color:#334155;"
               "vertical-align:top;border-bottom:1px solid #f1f5f9'")
         TDW = ("style='padding:9px 14px;font-size:0.8rem;color:#475569;"
-               "vertical-align:top;border-bottom:1px solid #f1f5f9;max-width:220px'")
+               "vertical-align:top;border-bottom:1px solid #f1f5f9;max-width:200px'")
 
-        rows_html = ""
-        for r in rows:
-            rows_html += (
-                f"<tr>"
-                f"<td {TD}><strong>{r['vn']}</strong>"
-                f"<div style='font-size:0.73rem;color:#94a3b8;margin-top:2px'>"
-                f"{r['hub']} · {r['vp']}</div></td>"
-                f"<td {TD} style='text-align:center'>{rag_cell(r['m_rag'])}</td>"
-                f"<td {TDW}>{r['m_reason']}</td>"
-                f"<td {TD} style='text-align:center'>{rag_cell(r['i_rag'])}</td>"
-                f"<td {TDW}>{r['i_reason']}</td>"
-                f"<td {TD} style='text-align:center'>{score_cell(r['score'])}</td>"
-                f"<td {TD} style='text-align:center'>{rag_cell(r['overall'])}</td>"
-                f"<td {TDW}>{r['note']}</td>"
-                f"</tr>"
+        # Header
+        h0,h1,h2,h3,h4,h5,h6,h7 = st.columns([2.5,1,2,1,2,0.8,1,2.5])
+        h0.markdown("**Company**")
+        h1.markdown("**Momentum RAG**")
+        h2.markdown("**Momentum Reason**")
+        h3.markdown("**Investment RAG**")
+        h4.markdown("**Investment Reason**")
+        h5.markdown("**Score**")
+        h6.markdown("**Overall RAG**")
+        h7.markdown("**Note on Overall Score**")
+        st.divider()
+
+        for ri, r in enumerate(rows):
+            vn       = r["vn"]
+            m_sigs_v = venture_signals.get(vn,{}).get("momentum",[])
+            i_sigs_v = venture_signals.get(vn,{}).get("investment",[])
+
+            c0,c1,c2,c3,c4,c5,c6,c7 = st.columns([2.5,1,2,1,2,0.8,1,2.5])
+
+            with c0:
+                st.markdown(
+                    f"<div style='font-weight:600;font-size:0.83rem'>{vn}</div>"
+                    f"<div style='font-size:0.72rem;color:#94a3b8'>"
+                    f"{r['hub']} · {r['vp']}</div>",
+                    unsafe_allow_html=True
+                )
+            with c1:
+                st.markdown(rag_cell(r["m_rag"]), unsafe_allow_html=True)
+            with c2:
+                st.markdown(
+                    f"<div style='font-size:0.79rem;color:#475569'>{r['m_reason']}</div>",
+                    unsafe_allow_html=True
+                )
+                if m_sigs_v:
+                    if st.button("🔍", key=f"m_sig_{ri}",
+                                 help=f"View {len(m_sigs_v)} momentum signals"):
+                        st.session_state["cs_dialog_venture"] = vn
+                        st.session_state["cs_dialog_type"]    = "momentum"
+                        st.rerun()
+            with c3:
+                st.markdown(rag_cell(r["i_rag"]), unsafe_allow_html=True)
+            with c4:
+                st.markdown(
+                    f"<div style='font-size:0.79rem;color:#475569'>{r['i_reason']}</div>",
+                    unsafe_allow_html=True
+                )
+                if i_sigs_v:
+                    if st.button("🔍", key=f"i_sig_{ri}",
+                                 help=f"View {len(i_sigs_v)} investment signals"):
+                        st.session_state["cs_dialog_venture"] = vn
+                        st.session_state["cs_dialog_type"]    = "investment"
+                        st.rerun()
+            with c5:
+                st.markdown(score_cell(r["score"]), unsafe_allow_html=True)
+            with c6:
+                st.markdown(rag_cell(r["overall"]), unsafe_allow_html=True)
+            with c7:
+                st.markdown(
+                    f"<div style='font-size:0.79rem;color:#475569'>{r['note']}</div>",
+                    unsafe_allow_html=True
+                )
+
+            st.markdown(
+                "<hr style='margin:4px 0;border:none;border-top:1px solid #f1f5f9'>",
+                unsafe_allow_html=True
             )
-
-        st.markdown(
-            f"<div style='overflow-x:auto;max-height:600px;border:1px solid #e2e8f0;"
-            f"border-radius:10px;overflow-y:auto'>"
-            f"<table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>"
-            f"<thead><tr>"
-            f"<th {TH}>Company</th>"
-            f"<th {TH}>Sprint Momentum RAG</th>"
-            f"<th {TH}>Momentum Reason</th>"
-            f"<th {TH}>Self Investment RAG</th>"
-            f"<th {TH}>Investment Reason</th>"
-            f"<th {TH}>Score</th>"
-            f"<th {TH}>Overall RAG</th>"
-            f"<th {TH}>Note on Overall Score</th>"
-            f"</tr></thead>"
-            f"<tbody>{rows_html}</tbody>"
-            f"</table></div>",
-            unsafe_allow_html=True
-        )
 
         # ── Download CSV ──────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
-        def esc(v): return f'"{str(v).replace(chr(34), chr(39))}"' 
+        def esc(v): return f'"{str(v).replace(chr(34), chr(39))}"'
         csv_lines = ["Company,Hub,Venture Partner,Momentum RAG,Momentum Reason,"
                      "Investment RAG,Investment Reason,Score,Overall RAG,Note"]
         for r in rows:

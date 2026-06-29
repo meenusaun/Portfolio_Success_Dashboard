@@ -177,7 +177,7 @@ def score_rag_from_signals(client, vname, sprint, notes, att_summary,
     def _reason(rag, nps, g, a, r, tot, category):
         if rag == "ZERO":
             return f"No {category} signals found."
-        return f"NPS {nps:+d} — {g} Green, {a} Amber, {r} Red of {tot} signals → {rag}."
+        return f"Signal NPS {nps:+d} — {g} Green, {a} Amber, {r} Red of {tot} signals → {rag}."
 
     m_reason = _reason(m_rag, m_nps, m_g, m_a, m_r, m_tot, "momentum")
     i_reason = _reason(i_rag, i_nps, i_g, i_a, i_r, i_tot, "investment")
@@ -190,12 +190,48 @@ def score_rag_from_signals(client, vname, sprint, notes, att_summary,
     }
     numeric_score = score_matrix.get((m_rag, i_rag), 0)
 
+    # ── Overall note — formula-based, stored in repo, zero extra API cost ──
+    all_g   = m_g   + i_g
+    all_a   = m_a   + i_a
+    all_r   = m_r   + i_r
+    all_tot = m_tot + i_tot
+    overall_nps = (
+        round(all_g / all_tot * 100) - round(all_r / all_tot * 100)
+    ) if all_tot else 0
+
+    if overall == "Green":
+        overall_note = (
+            f"Signal NPS {overall_nps:+d} from {all_tot} signals "
+            f"({all_g} Green, {all_a} Amber, {all_r} Red). "
+            f"Founder actively progressing on sprint with concrete actions and investment committed."
+        )
+    elif overall == "Amber":
+        overall_note = (
+            f"Signal NPS {overall_nps:+d} from {all_tot} signals "
+            f"({all_g} Green, {all_a} Amber, {all_r} Red). "
+            f"Some positive actions taken but sprint progress is partial or delayed. "
+            f"Follow-up recommended to unblock momentum."
+        )
+    elif overall == "Red":
+        overall_note = (
+            f"Signal NPS {overall_nps:+d} from {all_tot} signals "
+            f"({all_g} Green, {all_a} Amber, {all_r} Red). "
+            f"Founder disengaged or not investing in sprint. "
+            f"Immediate intervention recommended."
+        )
+    else:
+        overall_note = (
+            "No signals extracted from available documents. "
+            "Prioritise document collection or venture re-engagement."
+        )
+
     return {
         "momentum_rag":      m_rag,
         "investment_rag":    i_rag,
         "overall_rag":       overall,
         "momentum_reason":   m_reason,
         "investment_reason": i_reason,
+        "overall_note":      overall_note,
         "momentum_score":    numeric_score,
         "investment_score":  numeric_score,
         "momentum_nps":      m_nps,
