@@ -1058,7 +1058,9 @@ with tab_scores:
             "Run Backend → Step 1 and upload signals_repository.json to SharePoint."
         )
     else:
-        vsummary = signals_repo.get("venture_summary", {})
+        # Use venture_rag — computed LIVE from signals via NPS formula
+        # This is always in sync with actual signals, never stale
+        # venture_rag is built at load time in the repo parsing section above
 
         # ── Filters ───────────────────────────────────
         f1, f2, f3, f4 = st.columns(4)
@@ -1097,7 +1099,7 @@ with tab_scores:
         rows = []
         rag_order = {"Red":0,"Amber":1,"Green":2,"ZERO":3,"Unknown":4}
 
-        for vn, vdata in vsummary.items():
+        for vn, vdata in venture_rag.items():
             overall  = vdata.get("overall_rag","ZERO")
             m_rag    = vdata.get("momentum_rag","ZERO")
             i_rag    = vdata.get("investment_rag","ZERO")
