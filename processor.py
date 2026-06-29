@@ -629,3 +629,165 @@ Return ONLY a JSON object. Use null for any field not found.
         return {k: v for k, v in data.items() if v is not None and str(v).strip() not in ["","null","None"]}
     except Exception as e:
         return {"_error": str(e)}
+
+
+def synthesise_value_delivered(client, signals_repo, feedback_repo, company_basics):
+    """
+    Synthesise portfolio-level value delivered from all available data.
+    One Claude call covering:
+      1. Jobs generated in 2026 (from hiring signals)
+      2. Gap categories resolved (from session summaries)
+      3. Actionable business directions (from next steps)
+      4. Problems solved categories (from signals + sessions)
+
+    Returns structured dict ready for frontend display.
+    """
+    # ── Collect all hiring signals ──────────────────
+    hiring_signals = []
+    all_momentum_signals = []
+    all_investment_signals = []
+
+    if signals_repo:
+        for vn, vdata in signals_repo.get("venture_summary", {}).items():
+            sigs = vdata.get("signals", {})
+            for s in sigs.get("investment", []):
+                ev = s.get("evidence","").lower()
+                if any(w in ev for w in ["hire","hired","staff","employ","recruit",
+                                          "team","people","headcount","joined"]):
+                    hiring_signals.append({
+                        "venture": vn,
+                        "evidence": s.get("evidence",""),
+                        "source":   s.get("source",""),
+                    })
+                all_investment_signals.append({
+                    "venture":  vn,
+                    "type":     s.get("type",""),
+                    "evidence": s.get("evidence",""),
+                    "category": s.get("category",""),
+                })
+            for s in sigs.get("momentum", []):
+                all_momentum_signals.append({
+                    "venture":  vn,
+                    "type":     s.get("type",""),
+                    "evidence": s.get("evidence",""),
+                    "category": s.get("category",""),
+                })
+
+    # ── Collect all session summaries + next steps ──
+    session_summaries = []
+    if feedback_repo:
+        for mn, mdata in feedback_repo.get("mentor_insights", {}).items():
+            for s in mdata.get("sessions", []):
+                summary    = s.get("meeting_summary","")
+                next_steps = s.get("next_steps","")
+                ask        = s.get("ask","")
+                venture    = s.get("venture_name","")
+                date       = s.get("meeting_date","")
+                if summary or next_steps:
+                    session_summaries.append({
+                        "venture":    venture,
+                        "mentor":     mn,
+                        "date":       date,
+                        "ask":        ask,
+                        "summary":    summary,
+                        "next_steps": next_steps,
+                    })
+
+    # ── Build context for Claude ────────────────────
+    hiring_text = "\n".join(
+        f"- {h['venture']}: {h['evidence']}"
+        for h in hiring_signals[:80]
+    ) or "No explicit hiring signals found."
+
+    momentum_text = "\n".join(
+        f"- [{s['venture']}] {s['type']}: {s['evidence']}"
+        for s in all_momentum_signals[:100]
+    ) or "No momentum signals."
+
+    investment_text = "\n".join(
+        f"- [{s['venture']}] {s['type']}: {s['evidence']}"
+        for s in all_investment_signals[:100]
+    ) or "No investment signals."
+
+    sessions_text = "\n".join(
+        f"- [{s['venture']} | {s['date']}] Ask: {s['ask']} | Summary: {s['summary'][:200]} | Next Steps: {s['next_steps'][:150]}"
+        for s in session_summaries[:100]
+    ) or "No session data."
+
+    total_ventures = len(signals_repo.get("venture_summary", {})) if signals_repo else 0
+    total_sessions = len(session_summaries)
+
+    prompt = f"""You are analysing a portfolio of {total_ventures} ventures in an accelerator program.
+Based on the data below, extract and synthesise portfolio-level insights.
+
+Return ONLY a JSON object with this exact structure:
+{{
+  "jobs_2026": {{
+    "total_estimated": <integer — best estimate of total jobs created in 2026 across all ventures>,
+    "confidence": "High/Medium/Low",
+    "evidence_count": <number of ventures with explicit hiring evidence>,
+    "top_examples": [
+      {{"venture": "...", "jobs_detail": "exact hiring evidence from signal"}}
+    ]
+  }},
+  "gap_categories": [
+    {{
+      "category": "GTM / Market Access",
+      "session_count": <int>,
+      "description": "one sentence on what gaps were addressed",
+      "example_actions": ["action 1", "action 2"]
+    }}
+  ],
+  "actionable_directions": {{
+    "summary": "3-5 sentence synthesis of the most common actionable directions that emerged across all sessions",
+    "top_directions": [
+      "Direction 1 — concise action-oriented statement",
+      "Direction 2",
+      "Direction 3",
+      "Direction 4",
+      "Direction 5"
+    ]
+  }},
+  "problems_solved": [
+    {{
+      "category": "category name",
+      "count": <number of ventures where this problem was addressed>,
+      "description": "one line description"
+    }}
+  ]
+}}
+
+Use these gap categories for gap_categories: GTM / Market Access, Product / Quality & Certification,
+Operations / Manufacturing, Finance & Working Capital, People / HR & Org, Supply Chain & Procurement.
+Include all 6 even if count is 0.
+
+For problems_solved, identify 5-8 distinct problem categories actually resolved (not targets).
+
+--- HIRING SIGNALS (for jobs_2026) ---
+{hiring_text}
+
+--- MOMENTUM SIGNALS (for problems solved + directions) ---
+{momentum_text}
+
+--- INVESTMENT SIGNALS (for problems solved + directions) ---
+{investment_text}
+
+--- SESSION SUMMARIES (for gap categories + directions) ---
+{sessions_text}"""
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw  = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
+        data = json.loads(raw)
+        data["total_ventures"]  = total_ventures
+        data["total_sessions"]  = total_sessions
+        data["hiring_signals"]  = len(hiring_signals)
+        data["total_momentum"]  = len(all_momentum_signals)
+        data["total_investment"]= len(all_investment_signals)
+        return data, None
+    except Exception as e:
+        return None, str(e)

@@ -566,12 +566,13 @@ if not repo_loaded:
     st.stop()
 
 # ── main tabs ──────────────────────────────────────────
-tab_definitions, tab_company, tab_overview, tab_ventures, tab_mentors = st.tabs([
+tab_definitions, tab_company, tab_overview, tab_ventures, tab_mentors, tab_value = st.tabs([
     "📖  How It Works",
     "🏢  Company Basics",
     "📊  Portfolio Overview",
     "🏢  Venture Cards",
-    "👥  Mentor Insights"
+    "👥  Mentor Insights",
+    "🌱  Value Delivered"
 ])
 
 # ══════════════════════════════════════════════════════
@@ -1967,3 +1968,285 @@ with tab_mentors:
                     </tr></thead>
                     <tbody>{rows_html}</tbody>
                 </table></div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════
+#  TAB 6: VALUE DELIVERED
+# ══════════════════════════════════════════════════════
+with tab_value:
+    st.title("🌱 Value Delivered to Beneficiaries")
+    st.caption("Portfolio-level synthesis · Powered by Claude AI · Based on signals, sessions and journey documents")
+    st.divider()
+
+    # ── Check data availability ───────────────────────
+    has_signals  = bool(signals_repo and signals_repo.get("venture_summary"))
+    has_feedback = bool(feedback_repo and feedback_repo.get("mentor_insights"))
+
+    if not has_signals and not has_feedback:
+        st.warning(
+            "No repository data found. Generate and upload both "
+            "`signals_repository.json` and `feedback_repository.json` first."
+        )
+    else:
+        # ── Static metrics (no API needed) ────────────
+        total_ventures  = len(signals_repo.get("venture_summary",{})) if signals_repo else 0
+        total_mentors   = len(feedback_repo.get("mentor_insights",{})) if feedback_repo else 0
+        total_sessions  = sum(
+            m.get("total_sessions",0)
+            for m in (feedback_repo.get("mentor_insights",{}) or {}).values()
+        ) if feedback_repo else 0
+
+        # Jobs target from company basics
+        total_jobs_target = 0
+        if company_basics:
+            for vdata in company_basics.values():
+                try:
+                    j = float(str(vdata.get("incremental_jobs_3yr","0")).replace(",",""))
+                    total_jobs_target += j
+                except: pass
+
+        # Avg rating
+        all_ratings = [
+            s.get("founder_rating")
+            for m in (feedback_repo.get("mentor_insights",{}) or {}).values()
+            for s in m.get("sessions",[])
+            if s.get("founder_rating")
+        ] if feedback_repo else []
+        avg_rating = round(sum(all_ratings)/len(all_ratings),1) if all_ratings else None
+
+        # ── Metric row ────────────────────────────────
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+        mc1.metric("Ventures Supported",    total_ventures)
+        mc2.metric("Mentors Engaged",       total_mentors)
+        mc3.metric("Sessions Delivered",    total_sessions)
+        mc4.metric("Avg Session Rating",    f"{avg_rating} ⭐" if avg_rating else "N/A")
+        mc5.metric("Jobs Target (3 Yr)",
+                   f"{int(total_jobs_target):,}" if total_jobs_target else "N/A")
+
+        st.divider()
+
+        # ── Generate insights button ──────────────────
+        SYNTHESIS_KEY = "value_synthesis_result"
+
+        if not client:
+            st.warning("Add ANTHROPIC_API_KEY to generate AI insights.")
+        else:
+            gen_col, _ = st.columns([2, 5])
+            with gen_col:
+                if st.button("✨ Generate Value Insights", key="gen_value",
+                             use_container_width=True):
+                    with st.spinner("Claude is synthesising portfolio value insights..."):
+                        from processor import synthesise_value_delivered
+                        result, err = synthesise_value_delivered(
+                            client, signals_repo, feedback_repo, company_basics or {}
+                        )
+                        if err:
+                            st.error(f"Error: {err}")
+                        else:
+                            st.session_state[SYNTHESIS_KEY] = result
+                            st.rerun()
+
+            if SYNTHESIS_KEY in st.session_state:
+                if st.button("🔄 Regenerate", key="regen_value"):
+                    del st.session_state[SYNTHESIS_KEY]
+                    st.rerun()
+
+        # ── Display synthesis ─────────────────────────
+        if SYNTHESIS_KEY in st.session_state:
+            result = st.session_state[SYNTHESIS_KEY]
+
+            # ── Section 1: Jobs Generated 2026 ────────
+            st.markdown("### 👷 Jobs Generated in 2026")
+            jobs_data = result.get("jobs_2026", {})
+            jobs_total    = jobs_data.get("total_estimated", 0)
+            jobs_conf     = jobs_data.get("confidence", "—")
+            jobs_ev_count = jobs_data.get("evidence_count", 0)
+            jobs_examples = jobs_data.get("top_examples", [])
+
+            conf_color = {"High":"#16a34a","Medium":"#d97706","Low":"#dc2626"}.get(
+                jobs_conf, "#64748b")
+
+            jc1, jc2, jc3 = st.columns([1.5, 1.5, 5])
+            jc1.metric("Estimated Jobs Created", f"{jobs_total:,}")
+            jc2.metric("Ventures with Hiring Evidence", jobs_ev_count)
+            with jc3:
+                st.markdown(
+                    f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
+                    f"border-radius:10px;padding:14px 18px;margin-top:4px'>"
+                    f"<div style='font-size:0.75rem;font-weight:600;color:#94a3b8;"
+                    f"text-transform:uppercase;margin-bottom:8px'>Confidence</div>"
+                    f"<span style='background:{conf_color}22;color:{conf_color};"
+                    f"padding:3px 12px;border-radius:20px;font-weight:700;"
+                    f"font-size:0.83rem'>{jobs_conf}</span>"
+                    f"<div style='font-size:0.78rem;color:#64748b;margin-top:8px'>"
+                    f"Based on {jobs_ev_count} ventures with explicit hiring mentions "
+                    f"in signals and session notes</div></div>",
+                    unsafe_allow_html=True
+                )
+
+            if jobs_examples:
+                with st.expander(f"📋 Hiring evidence ({len(jobs_examples)} ventures)"):
+                    for ex in jobs_examples:
+                        st.markdown(
+                            f"<div style='padding:6px 0;border-bottom:1px solid #f1f5f9'>"
+                            f"<span style='font-weight:600;color:#1e293b'>"
+                            f"{ex.get('venture','')}</span>"
+                            f"<div style='font-size:0.82rem;color:#475569;margin-top:2px'>"
+                            f"{ex.get('jobs_detail','')}</div></div>",
+                            unsafe_allow_html=True
+                        )
+
+            st.divider()
+
+            # ── Section 2: Gap Categories Resolved ────
+            st.markdown("### 🔧 Gap Categories Resolved")
+            st.caption("Based on session summaries across all mentoring sessions")
+
+            gap_categories = result.get("gap_categories", [])
+            if gap_categories:
+                # Sort by session count descending
+                gap_categories = sorted(gap_categories,
+                                        key=lambda x: x.get("session_count",0),
+                                        reverse=True)
+                max_count = max(g.get("session_count",0) for g in gap_categories) or 1
+
+                gc_cols = st.columns(2)
+                for idx, gap in enumerate(gap_categories):
+                    cat   = gap.get("category","—")
+                    count = gap.get("session_count", 0)
+                    desc  = gap.get("description","")
+                    examples = gap.get("example_actions", [])
+                    pct   = round(count / max_count * 100)
+
+                    with gc_cols[idx % 2]:
+                        ex_html = "".join(
+                            f"<div style='font-size:0.76rem;color:#475569;"
+                            f"margin-top:3px'>• {e}</div>"
+                            for e in examples[:3]
+                        )
+                        st.markdown(
+                            f"<div style='background:#ffffff;border:1px solid #e2e8f0;"
+                            f"border-radius:10px;padding:14px 16px;margin-bottom:12px'>"
+                            f"<div style='display:flex;justify-content:space-between;"
+                            f"align-items:center;margin-bottom:6px'>"
+                            f"<span style='font-weight:700;font-size:0.9rem;color:#1e293b'>"
+                            f"{cat}</span>"
+                            f"<span style='background:#e0e7ff;color:#3730a3;padding:2px 10px;"
+                            f"border-radius:12px;font-size:0.78rem;font-weight:700'>"
+                            f"{count} sessions</span></div>"
+                            f"<div style='background:#f1f5f9;border-radius:4px;height:6px;"
+                            f"margin-bottom:8px;overflow:hidden'>"
+                            f"<div style='background:#6366f1;height:100%;width:{pct}%'>"
+                            f"</div></div>"
+                            f"<div style='font-size:0.82rem;color:#475569;margin-bottom:6px'>"
+                            f"{desc}</div>"
+                            f"{ex_html}</div>",
+                            unsafe_allow_html=True
+                        )
+
+            st.divider()
+
+            # ── Section 3: Actionable Business Direction ──
+            st.markdown("### 🧭 Actionable Business Direction")
+            st.caption("Synthesised from session notes and next steps across all ventures")
+
+            directions_data = result.get("actionable_directions", {})
+            summary     = directions_data.get("summary","")
+            top_dirs    = directions_data.get("top_directions", [])
+
+            if summary:
+                st.markdown(
+                    f"<div style='background:#f8fafc;border:1px solid #e2e8f0;"
+                    f"border-left:4px solid #6366f1;border-radius:8px;"
+                    f"padding:16px 20px;font-size:0.87rem;color:#334155;"
+                    f"line-height:1.8;margin-bottom:16px'>{summary}</div>",
+                    unsafe_allow_html=True
+                )
+
+            if top_dirs:
+                st.markdown("**Top Actionable Directions:**")
+                for i, direction in enumerate(top_dirs, 1):
+                    st.markdown(
+                        f"<div style='display:flex;gap:12px;align-items:flex-start;"
+                        f"padding:10px 0;border-bottom:1px solid #f1f5f9'>"
+                        f"<span style='background:#6366f1;color:white;border-radius:50%;"
+                        f"width:24px;height:24px;display:flex;align-items:center;"
+                        f"justify-content:center;font-size:0.75rem;font-weight:700;"
+                        f"flex-shrink:0'>{i}</span>"
+                        f"<div style='font-size:0.85rem;color:#334155;padding-top:3px'>"
+                        f"{direction}</div></div>",
+                        unsafe_allow_html=True
+                    )
+
+            st.divider()
+
+            # ── Section 4: Problems Solved ─────────────
+            st.markdown("### ✅ Problems Solved (Category Level)")
+            st.caption("Categories of business challenges addressed across the portfolio")
+
+            problems = result.get("problems_solved", [])
+            if problems:
+                problems = sorted(problems, key=lambda x: x.get("count",0), reverse=True)
+
+                # Badge-style display
+                badges_html = ""
+                for p in problems:
+                    cat   = p.get("category","")
+                    count = p.get("count", 0)
+                    desc  = p.get("description","")
+                    badges_html += (
+                        f"<div style='background:#ffffff;border:1px solid #e2e8f0;"
+                        f"border-radius:10px;padding:12px 16px;margin-bottom:10px;"
+                        f"display:flex;align-items:flex-start;gap:12px'>"
+                        f"<div style='background:#dcfce7;color:#166534;padding:4px 12px;"
+                        f"border-radius:20px;font-weight:700;font-size:0.82rem;"
+                        f"white-space:nowrap;flex-shrink:0'>{count} ventures</div>"
+                        f"<div><div style='font-weight:600;color:#1e293b;font-size:0.87rem'>"
+                        f"{cat}</div>"
+                        f"<div style='font-size:0.8rem;color:#64748b;margin-top:2px'>"
+                        f"{desc}</div></div></div>"
+                    )
+                pc1, pc2 = st.columns(2)
+                half = len(problems) // 2 + len(problems) % 2
+                with pc1:
+                    for p in problems[:half]:
+                        cat   = p.get("category","")
+                        count = p.get("count", 0)
+                        desc  = p.get("description","")
+                        st.markdown(
+                            f"<div style='background:#ffffff;border:1px solid #e2e8f0;"
+                            f"border-radius:10px;padding:12px 16px;margin-bottom:10px;"
+                            f"display:flex;align-items:flex-start;gap:12px'>"
+                            f"<div style='background:#dcfce7;color:#166534;padding:4px 12px;"
+                            f"border-radius:20px;font-weight:700;font-size:0.82rem;"
+                            f"white-space:nowrap;flex-shrink:0'>{count} ventures</div>"
+                            f"<div><div style='font-weight:600;color:#1e293b;font-size:0.87rem'>"
+                            f"{cat}</div>"
+                            f"<div style='font-size:0.8rem;color:#64748b;margin-top:2px'>"
+                            f"{desc}</div></div></div>",
+                            unsafe_allow_html=True
+                        )
+                with pc2:
+                    for p in problems[half:]:
+                        cat   = p.get("category","")
+                        count = p.get("count", 0)
+                        desc  = p.get("description","")
+                        st.markdown(
+                            f"<div style='background:#ffffff;border:1px solid #e2e8f0;"
+                            f"border-radius:10px;padding:12px 16px;margin-bottom:10px;"
+                            f"display:flex;align-items:flex-start;gap:12px'>"
+                            f"<div style='background:#dcfce7;color:#166534;padding:4px 12px;"
+                            f"border-radius:20px;font-weight:700;font-size:0.82rem;"
+                            f"white-space:nowrap;flex-shrink:0'>{count} ventures</div>"
+                            f"<div><div style='font-weight:600;color:#1e293b;font-size:0.87rem'>"
+                            f"{cat}</div>"
+                            f"<div style='font-size:0.8rem;color:#64748b;margin-top:2px'>"
+                            f"{desc}</div></div></div>",
+                            unsafe_allow_html=True
+                        )
+
+        else:
+            st.info(
+                "Click **✨ Generate Value Insights** above to synthesise portfolio value "
+                "from signals, session notes and journey documents."
+            )
