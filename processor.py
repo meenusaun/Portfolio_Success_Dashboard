@@ -880,3 +880,114 @@ For problems_solved, identify 5-8 distinct problem categories actually resolved 
         return data, None
     except Exception as e:
         return None, str(e)
+
+
+def extract_people_hired_data(client, vname, full_text):
+    """
+    Extract hiring information for a venture from all available documents.
+    Returns structured dict with counts, descriptions, and role breakdown by function.
+    Uses claude-haiku for cost efficiency.
+    """
+    if not full_text or len(full_text.strip()) < 100:
+        return {
+            "resources_hired_count": 0,
+            "resources_hired_description": "Data Not Available",
+            "hiring_plan_6mo_count": 0,
+            "hiring_plan_6mo_description": "Data Not Available",
+            "role_breakdown": {
+                "gtm": "Data Not Available", "product": "Data Not Available",
+                "operations": "Data Not Available", "supply_chain": "Data Not Available",
+                "hr": "Data Not Available", "finance": "Data Not Available",
+            }
+        }
+
+    chunks = chunk_text(full_text)
+
+    PROMPT = """Venture: {vname} | Chunk {n}/{total}
+
+Extract hiring information from the text below. Look for:
+1. RESOURCES ALREADY HIRED — staff/people the founder has confirmed hiring (completed action)
+2. 6-MONTH HIRING PLAN — staff the founder plans/intends to hire in the next 6 months (stated intent, not yet hired)
+
+For each hire found, note the role and which business function it belongs to:
+GTM (sales/marketing), Product, Operations, Supply Chain, HR/People, Finance.
+
+Return ONLY JSON, no markdown, no explanation:
+{{
+  "hired": [
+    {{"role": "exact role title", "function": "GTM/Product/Operations/Supply Chain/HR/Finance", "evidence": "exact quote"}}
+  ],
+  "planned": [
+    {{"role": "exact role title", "function": "GTM/Product/Operations/Supply Chain/HR/Finance", "evidence": "exact quote"}}
+  ]
+}}
+
+If genuinely none found in a category, use empty array [].
+Do NOT invent or assume — only extract what is explicitly stated.
+
+--- DOCUMENTS (Chunk {n}/{total}) ---
+{text}"""
+
+    all_hired   = []
+    all_planned = []
+
+    for i, chunk in enumerate(chunks):
+        try:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1200,
+                messages=[{"role": "user", "content":
+                    PROMPT.format(vname=vname, n=i+1, total=len(chunks), text=chunk)}]
+            )
+            raw = resp.content[0].text.strip()
+            raw = re.sub(r"```json|```", "", raw).strip()
+            start = raw.find("{")
+            end   = raw.rfind("}") + 1
+            if start == -1 or end == 0: continue
+            data = json.loads(raw[start:end])
+
+            for h in data.get("hired", []):
+                dk = f"{h.get('role','')}_{h.get('function','')}"
+                if dk not in [f"{x.get('role','')}_{x.get('function','')}" for x in all_hired]:
+                    all_hired.append(h)
+            for p in data.get("planned", []):
+                dk = f"{p.get('role','')}_{p.get('function','')}"
+                if dk not in [f"{x.get('role','')}_{x.get('function','')}" for x in all_planned]:
+                    all_planned.append(p)
+        except Exception:
+            continue
+
+    # Build role breakdown by function
+    FUNCTIONS = ["GTM", "Product", "Operations", "Supply Chain", "HR", "Finance"]
+    role_breakdown = {}
+    for fn in FUNCTIONS:
+        fn_key = fn.lower().replace(" ", "_")
+        fn_hired = [h for h in all_hired if h.get("function","").upper() == fn.upper()]
+        if fn_hired:
+            roles_str = ", ".join(f"{h.get('role','')}" for h in fn_hired)
+            role_breakdown[fn_key] = f"{len(fn_hired)} ({roles_str})"
+        else:
+            role_breakdown[fn_key] = "Data Not Available"
+
+    # Build descriptions
+    if all_hired:
+        hired_desc = "Hired: " + ", ".join(
+            f"{h.get('role','')} ({h.get('function','')})" for h in all_hired
+        )
+    else:
+        hired_desc = "Data Not Available"
+
+    if all_planned:
+        planned_desc = "Planned: " + ", ".join(
+            f"{p.get('role','')} ({p.get('function','')})" for p in all_planned
+        )
+    else:
+        planned_desc = "Data Not Available"
+
+    return {
+        "resources_hired_count":       len(all_hired),
+        "resources_hired_description": hired_desc,
+        "hiring_plan_6mo_count":       len(all_planned),
+        "hiring_plan_6mo_description": planned_desc,
+        "role_breakdown":              role_breakdown,
+    }

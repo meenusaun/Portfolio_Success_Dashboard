@@ -34,6 +34,7 @@ DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 SIGNALS_REPO_PATH  = f"{REPO_FOLDER}/signals_repository.json"
 FEEDBACK_REPO_PATH = f"{REPO_FOLDER}/feedback_repository.json"
 JOURNEY_REPO_PATH  = f"{REPO_FOLDER}/journey_repository.json"
+PEOPLE_REPO_PATH   = f"{REPO_FOLDER}/people_repository.json"
 
 st.set_page_config(
     page_title="Portfolio Success Intelligence",
@@ -338,10 +339,22 @@ def load_journey_repo(_sp_id, use_sp):
     except Exception as e:
         return None, str(e)
 
+@st.cache_data(show_spinner=False, ttl=300)
+def load_people_repo(_sp_id, use_sp):
+    if not use_sp or not ENV_CLIENT_ID: return None, "SharePoint not configured"
+    try:
+        from sharepoint_reader import SharePointReader
+        sp = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+        content = sp.download_file(PEOPLE_REPO_PATH)
+        return json.loads(content.decode("utf-8")), None
+    except Exception as e:
+        return None, str(e)
+
 with st.spinner("Loading Knowledge Repositories from SharePoint..."):
     signals_repo, sig_err  = load_signals_repo(sp_id, use_sp)
     feedback_repo, fb_err  = load_feedback_repo(sp_id, use_sp)
     journey_repo,  j_err   = load_journey_repo(sp_id, use_sp)
+    people_repo,   p_err   = load_people_repo(sp_id, use_sp)
 
 # ── RAG formula (mirrors processor.py — single source of truth) ───
 def _nps_from_signals(signals_list):
@@ -602,14 +615,15 @@ if not repo_loaded:
     st.stop()
 
 # ── main tabs ──────────────────────────────────────────
-tab_definitions, tab_company, tab_scores, tab_overview, tab_ventures, tab_mentors, tab_value = st.tabs([
+tab_definitions, tab_company, tab_scores, tab_overview, tab_ventures, tab_mentors, tab_value, tab_people = st.tabs([
     "📖  How It Works",
     "🏢  Company Basics",
     "🎯  Company & Score",
     "📊  Portfolio Overview",
     "🏢  Venture Cards",
     "👥  Mentor Insights",
-    "🌱  Value Delivered"
+    "🌱  Value Delivered",
+    "👷  People Hired"
 ])
 
 # ══════════════════════════════════════════════════════
@@ -2546,3 +2560,145 @@ with tab_value:
                 "Click **✨ Generate Value Insights** above to synthesise portfolio value "
                 "from signals, session notes and journey documents."
             )
+
+
+# ══════════════════════════════════════════════════════
+#  TAB: PEOPLE HIRED
+# ══════════════════════════════════════════════════════
+with tab_people:
+    st.title("👷 People Hired")
+    st.caption("Resources hired, 6-month hiring plans, and role breakdown by function — read from all documents")
+    st.divider()
+
+    if not people_repo or not people_repo.get("ventures"):
+        st.warning(
+            "People Hired data not found. "
+            "Run Backend → Step 4 and upload people_repository.json to SharePoint."
+        )
+    else:
+        people_ventures = people_repo.get("ventures", {})
+
+        # ── Summary metrics ────────────────────────────
+        total_hired   = sum(v.get("resources_hired_count",0) for v in people_ventures.values())
+        total_planned = sum(v.get("hiring_plan_6mo_count",0) for v in people_ventures.values())
+        ventures_with_hires = sum(1 for v in people_ventures.values()
+                                  if v.get("resources_hired_count",0) > 0)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Resources Hired",     total_hired)
+        m2.metric("Total 6-Mo Hiring Plan",    total_planned)
+        m3.metric("Ventures with Hires",       ventures_with_hires)
+        m4.metric("Ventures Tracked",          len(people_ventures))
+
+        st.divider()
+
+        # ── Filters ────────────────────────────────────
+        f1, f2 = st.columns(2)
+        ph_search = f1.text_input("🔍 Search Venture", key="ph_search")
+        ph_filter = f2.selectbox(
+            "Filter",
+            ["All", "Has Hires", "Has 6-Mo Plan", "No Data"],
+            key="ph_filter"
+        )
+
+        def na(v):
+            if not v or str(v).strip() in ["None","nan","NaT","","Data Not Available"]:
+                return "Data Not Available"
+            return str(v).strip()
+
+        rows = []
+        for vn, vdata in people_ventures.items():
+            if ph_search and ph_search.lower() not in vn.lower(): continue
+
+            hired_count   = vdata.get("resources_hired_count", 0)
+            planned_count = vdata.get("hiring_plan_6mo_count", 0)
+
+            if ph_filter == "Has Hires" and hired_count == 0: continue
+            if ph_filter == "Has 6-Mo Plan" and planned_count == 0: continue
+            if ph_filter == "No Data" and (hired_count > 0 or planned_count > 0): continue
+
+            rows.append({
+                "vn": vn,
+                "hired_count":   hired_count,
+                "hired_desc":    na(vdata.get("resources_hired_description")),
+                "planned_count": planned_count,
+                "planned_desc":  na(vdata.get("hiring_plan_6mo_description")),
+                "role_breakdown": vdata.get("role_breakdown", {}),
+            })
+
+        rows.sort(key=lambda r: r["hired_count"] + r["planned_count"], reverse=True)
+        st.caption(f"{len(rows)} ventures")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Table ──────────────────────────────────────
+        TH = ("style='padding:9px 14px;text-align:left;color:#475569;"
+              "font-weight:600;font-size:0.78rem;background:#f1f5f9;"
+              "white-space:nowrap;border-bottom:2px solid #e2e8f0'")
+        TD = ("style='padding:9px 14px;font-size:0.8rem;color:#334155;"
+              "vertical-align:top;border-bottom:1px solid #f1f5f9'")
+        TDW = ("style='padding:9px 14px;font-size:0.8rem;color:#475569;"
+               "vertical-align:top;border-bottom:1px solid #f1f5f9;max-width:240px'")
+
+        FUNCTIONS = [("gtm","GTM"),("product","Product"),("operations","Operations"),
+                     ("supply_chain","Supply Chain"),("hr","HR"),("finance","Finance")]
+
+        rows_html = ""
+        for r in rows:
+            rb = r["role_breakdown"]
+            rb_html = "<div style='font-size:0.74rem;line-height:1.6'>"
+            for key, label in FUNCTIONS:
+                val = na(rb.get(key))
+                color = "#94a3b8" if val == "Data Not Available" else "#334155"
+                rb_html += f"<div><strong>{label}:</strong> <span style='color:{color}'>{val}</span></div>"
+            rb_html += "</div>"
+
+            hired_badge_color = "#16a34a" if r["hired_count"] > 0 else "#94a3b8"
+            planned_badge_color = "#d97706" if r["planned_count"] > 0 else "#94a3b8"
+
+            rows_html += f"""<tr>
+                <td {TD}><strong>{r['vn']}</strong></td>
+                <td {TD} style='text-align:center'>
+                    <span style='font-weight:800;font-size:1rem;color:{hired_badge_color}'>
+                    {r['hired_count']}</span></td>
+                <td {TDW}>{r['hired_desc']}</td>
+                <td {TD} style='text-align:center'>
+                    <span style='font-weight:800;font-size:1rem;color:{planned_badge_color}'>
+                    {r['planned_count']}</span></td>
+                <td {TDW}>{r['planned_desc']}</td>
+                <td {TDW}>{rb_html}</td>
+            </tr>"""
+
+        st.markdown(f"""<div style='overflow-x:auto;max-height:650px;
+        border:1px solid #e2e8f0;border-radius:10px;overflow-y:auto'>
+        <table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>
+        <thead><tr>
+            <th {TH}>Company Name</th>
+            <th {TH}>Resources Hired<br>(Count)</th>
+            <th {TH}>Resources Hired<br>(Description)</th>
+            <th {TH}>6-Mo Hiring Plan<br>(Count)</th>
+            <th {TH}>6-Mo Hiring Plan<br>(Description)</th>
+            <th {TH}>Role Breakdown by Function</th>
+        </tr></thead><tbody>{rows_html}</tbody></table></div>""",
+        unsafe_allow_html=True)
+
+        # ── Download CSV ───────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        def esc_ph(v): return f'"{str(v).replace(chr(34), chr(39))}"'
+        csv_lines = ["Company,Hired Count,Hired Description,Planned Count,Planned Description,"
+                     "GTM,Product,Operations,Supply Chain,HR,Finance"]
+        for r in rows:
+            rb = r["role_breakdown"]
+            csv_lines.append(
+                f"{esc_ph(r['vn'])},{esc_ph(r['hired_count'])},{esc_ph(r['hired_desc'])},"
+                f"{esc_ph(r['planned_count'])},{esc_ph(r['planned_desc'])},"
+                f"{esc_ph(na(rb.get('gtm')))},{esc_ph(na(rb.get('product')))},"
+                f"{esc_ph(na(rb.get('operations')))},{esc_ph(na(rb.get('supply_chain')))},"
+                f"{esc_ph(na(rb.get('hr')))},{esc_ph(na(rb.get('finance')))}"
+            )
+        st.download_button(
+            "⬇️ Download as CSV",
+            data="\n".join(csv_lines),
+            file_name="people_hired.csv",
+            mime="text/csv",
+            key="ph_download"
+        )

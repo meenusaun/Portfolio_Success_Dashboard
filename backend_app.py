@@ -476,10 +476,11 @@ def get_attendance_for_venture(vname, attendance_data):
 #  MAIN UI — Two generation steps
 # ══════════════════════════════════════════════════════
 
-step1_tab, step2_tab, step3_tab, status_tab = st.tabs([
+step1_tab, step2_tab, step3_tab, step4_tab, status_tab = st.tabs([
     "📊 Step 1 — Signals Repository",
     "🎙 Step 2 — Feedback Repository",
     "📄 Step 3 — Journey Documents",
+    "👷 Step 4 — People Hired",
     "📁 Status & Downloads"
 ])
 
@@ -1323,6 +1324,148 @@ with step3_tab:
                 st.caption("Includes journey data merged into signals repository")
             else:
                 st.info("Run Step 1 first to also merge journey data into signals repository.")
+
+# ══════════════════════════════════════════════════════
+#  STEP 4: PEOPLE HIRED
+# ══════════════════════════════════════════════════════
+with step4_tab:
+    st.markdown("### 👷 Extract People Hired Data")
+    st.caption(
+        "Reads ALL documents (venture folder + Common Documents) → "
+        "Extracts hiring data (resources hired, 6-month plan, role breakdown by function) → "
+        "Stores in people_repository.json"
+    )
+
+    if not client:
+        st.error("❌ Anthropic API key required."); st.stop()
+
+    PEOPLE_KEY = "people_repo_results"
+    if PEOPLE_KEY not in st.session_state:
+        st.session_state[PEOPLE_KEY] = {}
+
+    people_results = st.session_state[PEOPLE_KEY]
+    done_p = sum(1 for v in people_results.values() if v.get("status") == "done")
+
+    if "common_text_sig" not in st.session_state:
+        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first.")
+        st.stop()
+
+    # ── Controls ──────────────────────────────────────
+    pc1, pc2, pc3 = st.columns([2, 1, 1])
+    with pc1:
+        p_venture_filter = st.multiselect(
+            "Ventures to process (leave empty = all)",
+            options=ventures_list, key="p_filter"
+        )
+    with pc2:
+        p_batch_size = st.selectbox("Batch size", [5, 10, 15, 20],
+                                     index=1, key="p_batch_size")
+    with pc3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        run_all_p = st.button("▶ Extract All", key="run_all_people",
+                               use_container_width=True)
+
+    p_target  = p_venture_filter if p_venture_filter else ventures_list
+    p_batches = [p_target[i:i+p_batch_size]
+                 for i in range(0, len(p_target), p_batch_size)]
+    st.caption(f"{len(p_target)} ventures · {len(p_batches)} batches")
+    st.divider()
+
+    common_text_p = st.session_state["common_text_sig"]
+
+    for bi, batch in enumerate(p_batches):
+        batch_done = sum(1 for v in batch
+                         if people_results.get(v,{}).get("status") == "done")
+        icon = "✅" if batch_done == len(batch) else                ("🔄" if batch_done > 0 else "⬜")
+        with st.expander(
+            f"{icon} Batch {bi+1}  —  {batch_done}/{len(batch)} done  —  "
+            f"{', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"
+        ):
+            for vn in batch:
+                pr = people_results.get(vn, {})
+                ps = pr.get("status", "pending")
+                ic = {"done":"✅","error":"❌"}.get(ps,"⬜")
+                if ps == "done":
+                    hc = pr.get("resources_hired_count", 0)
+                    pc = pr.get("hiring_plan_6mo_count", 0)
+                    st.caption(f"{ic} {vn}  ·  {hc} hired · {pc} planned")
+                else:
+                    st.caption(f"{ic} {vn}  ·  Not processed")
+
+            st.markdown("")
+            run_p_btn   = st.button(f"▶ Run Batch {bi+1}", key=f"run_p_batch_{bi}")
+            should_run_p = run_p_btn or run_all_p
+
+            if should_run_p:
+                prog_p = st.progress(0, text=f"Starting batch {bi+1}...")
+                for vi, vname in enumerate(batch):
+                    if people_results.get(vname,{}).get("status") == "done":
+                        prog_p.progress((vi+1)/len(batch),
+                                        text=f"⚡ Skipping {vname}")
+                        continue
+
+                    prog_p.progress(vi/len(batch),
+                                    text=f"Processing {vname} ({vi+1}/{len(batch)})...")
+
+                    # Build full_text from venture files + common docs
+                    vfiles  = load_v_files(vname)
+                    fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+                    tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+                    sp_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
+                    jr_text = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
+                    others  = [sp_get_text(p) for k,p in vfiles.items() if k.startswith("other_")]
+                    others  = [t for t in others if t]
+
+                    venture_common = extract_venture_from_common(vname, common_text_p)
+
+                    sources = {
+                        "Feedback": fb_text, "Transcript": tr_text,
+                        "Sprint Plan": sp_text, "Growth Journey": jr_text,
+                        "Common Docs": venture_common,
+                    }
+                    for idx, ot in enumerate(others):
+                        sources[f"Venture File {idx+1}"] = ot
+
+                    full_text = "\n\n".join(
+                        f"=== {k} ===\n{v}" for k,v in sources.items() if v)
+
+                    from processor import extract_people_hired_data
+                    extracted = extract_people_hired_data(client, vname, full_text)
+
+                    people_results[vname] = {
+                        "status":       "done",
+                        "venture_name": vname,
+                        "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        **extracted
+                    }
+                    st.session_state[PEOPLE_KEY] = people_results
+
+                prog_p.progress(1.0, text=f"✅ Batch {bi+1} complete!")
+                st.rerun()
+
+    # ── Download ──────────────────────────────────────
+    st.divider()
+    done_p = sum(1 for v in people_results.values() if v.get("status") == "done")
+    st.markdown(f"**{done_p}/{len(ventures_list)} ventures processed**")
+
+    if done_p > 0:
+        people_payload = {
+            "generated_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "venture_count": done_p,
+            "ventures":      {
+                vn: vr for vn, vr in people_results.items()
+                if vr.get("status") == "done"
+            }
+        }
+        st.markdown("**💾 Download people_repository.json**")
+        st.download_button(
+            "⬇️ Download people_repository.json",
+            data=json.dumps(people_payload, indent=2, default=str),
+            file_name="people_repository.json",
+            mime="application/json",
+        )
+        people_repo_path = f"{REPO_FOLDER}/people_repository.json"
+        st.caption(f"Upload to SharePoint: `{people_repo_path}`")
 
 # ══════════════════════════════════════════════════════
 #  STATUS TAB
