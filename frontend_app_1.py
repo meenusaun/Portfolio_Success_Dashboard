@@ -768,6 +768,34 @@ with tab_definitions:
         )
         st.markdown(def_card("🌐 Overall Portfolio RAG", port_def), unsafe_allow_html=True)
 
+    # Row 3.5: Stream Support definitions
+    stream_def = (
+        "<div style='font-size:0.87rem;color:#334155;line-height:1.6;margin-bottom:12px'>"
+        "Shown in <strong>Company Basics</strong> for each of the 6 streams "
+        "(GTM, Product, Operations, Supply Chain, People/HR, Finance) — "
+        "indicates the level of support the venture needs in that stream.</div>"
+        + rule_row("Green","🟢","On track — minimal or no support needed in this stream.")
+        + rule_row("Amber","🟡","Partial / moderate need — some support required.")
+        + "<div style='display:flex;align-items:flex-start;gap:14px;padding:10px 0;"
+          "border-bottom:1px solid #f1f5f9'>"
+          "<span style='background:#e0e7ff;color:#3730a3;padding:3px 14px;"
+          "border-radius:20px;font-weight:700;font-size:0.83rem;white-space:nowrap;"
+          "min-width:70px;text-align:center'>🔵 DEEP</span>"
+          "<div style='font-size:0.87rem;color:#334155;line-height:1.6'>"
+          "<strong>Deep Support</strong> — venture needs intensive, hands-on support "
+          "in this stream, beyond standard mentoring. Typically means more frequent "
+          "sessions and closer RN team involvement.</div></div>"
+        + rule_row("Red","🔴","Critical gap — significant support needed in this stream.")
+        + "<div style='display:flex;align-items:flex-start;gap:14px;padding:10px 0'>"
+          "<span style='background:#fee2e2;color:#991b1b;padding:3px 14px;"
+          "border-radius:20px;font-weight:700;font-size:0.83rem;white-space:nowrap;"
+          "min-width:70px;text-align:center'>🔴 RED+D</span>"
+          "<div style='font-size:0.87rem;color:#334155;line-height:1.6'>"
+          "<strong>Red (Deep Support)</strong> — critical gap AND needs intensive, "
+          "hands-on intervention. Highest priority for RN team attention.</div></div>"
+    )
+    st.markdown(def_card("🔧 Stream Support Levels", stream_def), unsafe_allow_html=True)
+
     # Row 4: Data sources
     st.markdown(
         def_card("📂 Data Sources Used Per Venture",
