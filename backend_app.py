@@ -1200,12 +1200,19 @@ with step3_tab:
             for vn in batch:
                 jr = journey_results.get(vn, {})
                 js = jr.get("status", "pending")
-                ic = {"done":"✅","error":"❌","no_doc":"⚠️"}.get(js,"⬜")
+                ic = {"done":"✅","error":"❌","no_doc":"⚠️","pending":"⬜"}.get(js,"⬜")
                 fields_found = len([k for k,v in jr.items()
                                     if k not in ["status","venture_name","processed_at","_error"]
                                     and v])
-                st.caption(f"{ic} {vn}  ·  "
-                           f"{'No document found' if js=='no_doc' else f'{fields_found} fields extracted' if js=='done' else 'Not processed'}")
+                if js == "error":
+                    err_msg = jr.get("_error", "Unknown error")
+                    st.caption(f"{ic} {vn}  ·  Error: {err_msg[:150]}")
+                elif js == "no_doc":
+                    st.caption(f"{ic} {vn}  ·  No Journey Document found for this venture")
+                elif js == "done":
+                    st.caption(f"{ic} {vn}  ·  {fields_found} fields extracted")
+                else:
+                    st.caption(f"{ic} {vn}  ·  Not processed yet")
 
             st.markdown("")
             run_j_btn   = st.button(f"▶ Run Batch {bi+1}", key=f"run_j_batch_{bi}")
