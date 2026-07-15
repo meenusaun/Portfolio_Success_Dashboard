@@ -885,109 +885,151 @@ For problems_solved, identify 5-8 distinct problem categories actually resolved 
 def extract_people_hired_data(client, vname, full_text):
     """
     Extract hiring information for a venture from all available documents.
-    Returns structured dict with counts, descriptions, and role breakdown by function.
+    Returns structured dict with:
+    - current_employee_count
+    - hired_2026_count + hired_2026_description
+    - hired_2027_count + hired_2027_description
+    - planned_2026_count + planned_2026_description
+    - planned_2027_count + planned_2027_description
+    - resources_hired_count / description (total confirmed hires)
+    - hiring_plan_6mo_count / description (near-term plan)
+    - role_breakdown by function
     Uses claude-haiku for cost efficiency.
     """
-    if not full_text or len(full_text.strip()) < 100:
-        return {
-            "resources_hired_count": 0,
-            "resources_hired_description": "Data Not Available",
-            "hiring_plan_6mo_count": 0,
-            "hiring_plan_6mo_description": "Data Not Available",
-            "role_breakdown": {
-                "gtm": "Data Not Available", "product": "Data Not Available",
-                "operations": "Data Not Available", "supply_chain": "Data Not Available",
-                "hr": "Data Not Available", "finance": "Data Not Available",
-            }
+    DNA = "Data Not Available"
+    empty = {
+        "current_employee_count":     DNA,
+        "resources_hired_count":      0,
+        "resources_hired_description":DNA,
+        "hired_2026_count":           0,
+        "hired_2026_description":     DNA,
+        "hired_2027_count":           0,
+        "hired_2027_description":     DNA,
+        "hiring_plan_6mo_count":      0,
+        "hiring_plan_6mo_description":DNA,
+        "planned_2026_count":         0,
+        "planned_2026_description":   DNA,
+        "planned_2027_count":         0,
+        "planned_2027_description":   DNA,
+        "role_breakdown": {
+            "gtm":DNA,"product":DNA,"operations":DNA,
+            "supply_chain":DNA,"hr":DNA,"finance":DNA,
         }
+    }
+    if not full_text or len(full_text.strip()) < 100:
+        return empty
 
     chunks = chunk_text(full_text)
 
     PROMPT = """Venture: {vname} | Chunk {n}/{total}
 
-Extract hiring information from the text below. Look for:
-1. RESOURCES ALREADY HIRED — staff/people the founder has confirmed hiring (completed action)
-2. 6-MONTH HIRING PLAN — staff the founder plans/intends to hire in the next 6 months (stated intent, not yet hired)
+Extract ALL people/hiring information from the text below.
 
-For each hire found, note the role and which business function it belongs to:
-GTM (sales/marketing), Product, Operations, Supply Chain, HR/People, Finance.
+Look for:
+1. CURRENT EMPLOYEES — total headcount / number of staff currently employed
+2. ALREADY HIRED IN 2026 — roles confirmed hired during 2026
+3. ALREADY HIRED IN 2027 — roles confirmed hired during 2027
+4. PLANNED HIRE 2026 — roles the founder plans/intends to hire in 2026 (not yet hired)
+5. PLANNED HIRE 2027 — roles the founder plans/intends to hire in 2027 (not yet hired)
+6. 6-MONTH PLAN — any near-term hiring intent (if no year specified)
 
-Return ONLY JSON, no markdown, no explanation:
+For each hire, note the role and function: GTM, Product, Operations, Supply Chain, HR, Finance.
+
+Return ONLY valid JSON, no markdown:
 {{
-  "hired": [
-    {{"role": "exact role title", "function": "GTM/Product/Operations/Supply Chain/HR/Finance", "evidence": "exact quote"}}
-  ],
-  "planned": [
-    {{"role": "exact role title", "function": "GTM/Product/Operations/Supply Chain/HR/Finance", "evidence": "exact quote"}}
-  ]
+  "current_employee_count": <integer or null>,
+  "hired_2026": [{{"role": "title", "function": "GTM/Product/Operations/Supply Chain/HR/Finance"}}],
+  "hired_2027": [{{"role": "title", "function": "..."}}],
+  "planned_2026": [{{"role": "title", "function": "..."}}],
+  "planned_2027": [{{"role": "title", "function": "..."}}],
+  "planned_6mo": [{{"role": "title", "function": "..."}}]
 }}
 
-If genuinely none found in a category, use empty array [].
-Do NOT invent or assume — only extract what is explicitly stated.
+Use empty arrays [] if nothing found. Do NOT invent — only extract what is explicitly stated.
 
 --- DOCUMENTS (Chunk {n}/{total}) ---
 {text}"""
 
-    all_hired   = []
-    all_planned = []
+    emp_count_raw = []
+    all_hired_2026 = []; all_hired_2027 = []
+    all_planned_2026 = []; all_planned_2027 = []; all_planned_6mo = []
+
+    def dedup(lst, new_items):
+        existing = {f"{x.get('role','')}_{x.get('function','')}" for x in lst}
+        for item in new_items:
+            dk = f"{item.get('role','')}_{item.get('function','')}"
+            if dk not in existing:
+                existing.add(dk)
+                lst.append(item)
 
     for i, chunk in enumerate(chunks):
         try:
             resp = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1200,
-                messages=[{"role": "user", "content":
+                max_tokens=1500,
+                messages=[{"role":"user","content":
                     PROMPT.format(vname=vname, n=i+1, total=len(chunks), text=chunk)}]
             )
             raw = resp.content[0].text.strip()
-            raw = re.sub(r"```json|```", "", raw).strip()
-            start = raw.find("{")
-            end   = raw.rfind("}") + 1
-            if start == -1 or end == 0: continue
-            data = json.loads(raw[start:end])
+            raw = re.sub(r"```json|```","",raw).strip()
+            s = raw.find("{"); e = raw.rfind("}")+1
+            if s == -1 or e == 0: continue
+            data = json.loads(raw[s:e])
 
-            for h in data.get("hired", []):
-                dk = f"{h.get('role','')}_{h.get('function','')}"
-                if dk not in [f"{x.get('role','')}_{x.get('function','')}" for x in all_hired]:
-                    all_hired.append(h)
-            for p in data.get("planned", []):
-                dk = f"{p.get('role','')}_{p.get('function','')}"
-                if dk not in [f"{x.get('role','')}_{x.get('function','')}" for x in all_planned]:
-                    all_planned.append(p)
+            if data.get("current_employee_count") is not None:
+                try: emp_count_raw.append(int(data["current_employee_count"]))
+                except: pass
+
+            dedup(all_hired_2026,  data.get("hired_2026",[]))
+            dedup(all_hired_2027,  data.get("hired_2027",[]))
+            dedup(all_planned_2026,data.get("planned_2026",[]))
+            dedup(all_planned_2027,data.get("planned_2027",[]))
+            dedup(all_planned_6mo, data.get("planned_6mo",[]))
         except Exception:
             continue
 
-    # Build role breakdown by function
-    FUNCTIONS = ["GTM", "Product", "Operations", "Supply Chain", "HR", "Finance"]
+    # All confirmed hires = 2026 + 2027 + 6mo (already done)
+    all_hired = all_hired_2026 + all_hired_2027
+    all_planned = all_planned_2026 + all_planned_2027 + all_planned_6mo
+
+    # Role breakdown by function (from all confirmed hires)
+    FUNCTIONS = ["GTM","Product","Operations","Supply Chain","HR","Finance"]
     role_breakdown = {}
     for fn in FUNCTIONS:
-        fn_key = fn.lower().replace(" ", "_")
-        fn_hired = [h for h in all_hired if h.get("function","").upper() == fn.upper()]
-        if fn_hired:
-            roles_str = ", ".join(f"{h.get('role','')}" for h in fn_hired)
-            role_breakdown[fn_key] = f"{len(fn_hired)} ({roles_str})"
-        else:
-            role_breakdown[fn_key] = "Data Not Available"
-
-    # Build descriptions
-    if all_hired:
-        hired_desc = "Hired: " + ", ".join(
-            f"{h.get('role','')} ({h.get('function','')})" for h in all_hired
+        fn_key = fn.lower().replace(" ","_")
+        fn_hired = [h for h in all_hired if h.get("function","").upper()==fn.upper()]
+        role_breakdown[fn_key] = (
+            f"{len(fn_hired)} ({', '.join(h.get('role','') for h in fn_hired)})"
+            if fn_hired else DNA
         )
-    else:
-        hired_desc = "Data Not Available"
+
+    def desc(lst, prefix=""):
+        if not lst: return DNA
+        return prefix + ", ".join(
+            f"{h.get('role','')} ({h.get('function','')})" for h in lst)
+
+    current_emp = max(emp_count_raw) if emp_count_raw else DNA
 
     if all_planned:
         planned_desc = "Planned: " + ", ".join(
             f"{p.get('role','')} ({p.get('function','')})" for p in all_planned
         )
     else:
-        planned_desc = "Data Not Available"
+        planned_desc = DNA
 
     return {
+        "current_employee_count":      str(current_emp) if current_emp != DNA else DNA,
         "resources_hired_count":       len(all_hired),
-        "resources_hired_description": hired_desc,
+        "resources_hired_description": desc(all_hired, "Hired: "),
+        "hired_2026_count":            len(all_hired_2026),
+        "hired_2026_description":      desc(all_hired_2026),
+        "hired_2027_count":            len(all_hired_2027),
+        "hired_2027_description":      desc(all_hired_2027),
         "hiring_plan_6mo_count":       len(all_planned),
         "hiring_plan_6mo_description": planned_desc,
+        "planned_2026_count":          len(all_planned_2026),
+        "planned_2026_description":    desc(all_planned_2026),
+        "planned_2027_count":          len(all_planned_2027),
+        "planned_2027_description":    desc(all_planned_2027),
         "role_breakdown":              role_breakdown,
     }

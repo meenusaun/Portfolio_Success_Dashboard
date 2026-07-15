@@ -26,7 +26,7 @@ ENV_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
 ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 
-SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
@@ -2126,13 +2126,13 @@ with tab_mentors:
 
         st.divider()
 
-        # ── Filters ───────────────────────────────────
+        # ── Filters — Row 1 ──────────────────────────────
         f1, f2, f3, f4 = st.columns(4)
         mentor_search = f1.text_input("🔍 Search Mentor", key="mi_search")
 
         all_hubs = sorted(set(
             s.get("hub","—")
-            for m in mentor_insights.values()
+            for m in active_mentor_insights.values()
             for s in m.get("sessions",[])
             if s.get("hub","—") not in ["—","Not Available"]
         ))
@@ -2140,7 +2140,7 @@ with tab_mentors:
 
         all_types = sorted(set(
             s.get("session_type","—")
-            for m in mentor_insights.values()
+            for m in active_mentor_insights.values()
             for s in m.get("sessions",[])
             if s.get("session_type","—") not in ["—","Not Available"]
         ))
@@ -2149,6 +2149,25 @@ with tab_mentors:
         rating_mi = f4.selectbox("Rating Filter",
             ["All","⭐⭐⭐⭐⭐ (4.5+)","⭐⭐⭐⭐ (4+)","⚠️ Flagged (≤3)"],
             key="mi_rating")
+
+        # ── Filters — Row 2: Mentor Name + Overall Rating ─
+        f5, f6, _, _ = st.columns(4)
+        all_mentor_names = sorted(active_mentor_insights.keys())
+        mentor_name_filter = f5.selectbox(
+            "Mentor Name", ["All"] + all_mentor_names, key="mi_mentor_name"
+        )
+
+        # Compute avg rating per mentor for filter
+        def mentor_avg_rating(mdata):
+            ratings = [s.get("founder_rating") for s in mdata.get("sessions",[])
+                       if s.get("founder_rating")]
+            return round(sum(ratings)/len(ratings),1) if ratings else None
+
+        overall_rating_filter = f6.selectbox(
+            "Overall Mentor Rating",
+            ["All","⭐ 4.5+","⭐ 4.0+","⭐ 3.5+","⚠️ Below 3.5"],
+            key="mi_overall_rating"
+        )
 
         # ── Build filtered mentor list ─────────────────
         def session_passes_filters(s):
@@ -2163,7 +2182,17 @@ with tab_mentors:
 
         filtered_mentors = {}
         for mn, mdata in active_mentor_insights.items():
+            # Mentor name filter
             if mentor_search and mentor_search.lower() not in mn.lower(): continue
+            if mentor_name_filter != "All" and mn != mentor_name_filter: continue
+            # Overall rating filter
+            if overall_rating_filter != "All":
+                avg_r = mentor_avg_rating(mdata)
+                if overall_rating_filter == "⭐ 4.5+"       and (not avg_r or avg_r < 4.5): continue
+                if overall_rating_filter == "⭐ 4.0+"       and (not avg_r or avg_r < 4.0): continue
+                if overall_rating_filter == "⭐ 3.5+"       and (not avg_r or avg_r < 3.5): continue
+                if overall_rating_filter == "⚠️ Below 3.5" and (not avg_r or avg_r >= 3.5): continue
+            # Session-level filters
             filtered_sessions = [s for s in mdata.get("sessions",[]) if session_passes_filters(s)]
             if filtered_sessions:
                 filtered_mentors[mn] = {**mdata, "sessions": filtered_sessions}
@@ -2606,94 +2635,132 @@ with tab_people:
                 return "Data Not Available"
             return str(v).strip()
 
+        FUNCTIONS = [("gtm","GTM"),("product","Product"),("operations","Operations"),
+                     ("supply_chain","Supply Chain"),("hr","HR"),("finance","Finance")]
+
         rows = []
         for vn, vdata in people_ventures.items():
             if ph_search and ph_search.lower() not in vn.lower(): continue
-
             hired_count   = vdata.get("resources_hired_count", 0)
-            planned_count = vdata.get("hiring_plan_6mo_count", 0)
-
-            if ph_filter == "Has Hires" and hired_count == 0: continue
+            planned_count = (vdata.get("planned_2026_count",0) +
+                             vdata.get("planned_2027_count",0) +
+                             vdata.get("hiring_plan_6mo_count",0))
+            if ph_filter == "Has Hires"     and hired_count   == 0: continue
             if ph_filter == "Has 6-Mo Plan" and planned_count == 0: continue
-            if ph_filter == "No Data" and (hired_count > 0 or planned_count > 0): continue
-
+            if ph_filter == "No Data"       and (hired_count>0 or planned_count>0): continue
             rows.append({
-                "vn": vn,
-                "hired_count":   hired_count,
-                "hired_desc":    na(vdata.get("resources_hired_description")),
-                "planned_count": planned_count,
-                "planned_desc":  na(vdata.get("hiring_plan_6mo_description")),
-                "role_breakdown": vdata.get("role_breakdown", {}),
+                "vn":           vn,
+                "current_emp":  na(vdata.get("current_employee_count")),
+                "hired_count":  hired_count,
+                "hired_desc":   na(vdata.get("resources_hired_description")),
+                "h26_count":    vdata.get("hired_2026_count",0),
+                "h26_desc":     na(vdata.get("hired_2026_description")),
+                "h27_count":    vdata.get("hired_2027_count",0),
+                "h27_desc":     na(vdata.get("hired_2027_description")),
+                "p26_count":    vdata.get("planned_2026_count",0),
+                "p26_desc":     na(vdata.get("planned_2026_description")),
+                "p27_count":    vdata.get("planned_2027_count",0),
+                "p27_desc":     na(vdata.get("planned_2027_description")),
+                "role_breakdown": vdata.get("role_breakdown",{}),
             })
 
-        rows.sort(key=lambda r: r["hired_count"] + r["planned_count"], reverse=True)
+        rows.sort(key=lambda r: r["hired_count"]+r["h26_count"]+r["h27_count"], reverse=True)
         st.caption(f"{len(rows)} ventures")
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── Table ──────────────────────────────────────
-        TH = ("style='padding:9px 14px;text-align:left;color:#475569;"
-              "font-weight:600;font-size:0.78rem;background:#f1f5f9;"
-              "white-space:nowrap;border-bottom:2px solid #e2e8f0'")
-        TD = ("style='padding:9px 14px;font-size:0.8rem;color:#334155;"
-              "vertical-align:top;border-bottom:1px solid #f1f5f9'")
-        TDW = ("style='padding:9px 14px;font-size:0.8rem;color:#475569;"
-               "vertical-align:top;border-bottom:1px solid #f1f5f9;max-width:240px'")
+        TH = ("style='padding:8px 12px;text-align:left;color:#475569;font-weight:600;"
+              "font-size:0.76rem;background:#f1f5f9;white-space:nowrap;"
+              "border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0'")
+        THG= ("style='padding:8px 12px;text-align:center;color:#166534;font-weight:700;"
+              "font-size:0.76rem;background:#dcfce7;white-space:nowrap;"
+              "border-bottom:2px solid #bbf7d0;border-right:1px solid #e2e8f0'")
+        THA= ("style='padding:8px 12px;text-align:center;color:#854d0e;font-weight:700;"
+              "font-size:0.76rem;background:#fef9c3;white-space:nowrap;"
+              "border-bottom:2px solid #fde68a;border-right:1px solid #e2e8f0'")
+        TD = ("style='padding:8px 12px;font-size:0.79rem;color:#334155;"
+              "vertical-align:top;border-bottom:1px solid #f1f5f9;"
+              "border-right:1px solid #f1f5f9'")
+        TDW= ("style='padding:8px 12px;font-size:0.78rem;color:#475569;"
+              "vertical-align:top;border-bottom:1px solid #f1f5f9;"
+              "border-right:1px solid #f1f5f9;max-width:180px'")
 
-        FUNCTIONS = [("gtm","GTM"),("product","Product"),("operations","Operations"),
-                     ("supply_chain","Supply Chain"),("hr","HR"),("finance","Finance")]
+        def count_badge(n, color):
+            return (f"<span style='font-weight:800;font-size:1rem;color:{color}'>{n}</span>"
+                    if n > 0 else "<span style='color:#94a3b8'>0</span>")
 
         rows_html = ""
         for r in rows:
             rb = r["role_breakdown"]
-            rb_html = "<div style='font-size:0.74rem;line-height:1.6'>"
+            rb_html = "<div style='font-size:0.73rem;line-height:1.7'>"
             for key, label in FUNCTIONS:
                 val = na(rb.get(key))
                 color = "#94a3b8" if val == "Data Not Available" else "#334155"
-                rb_html += f"<div><strong>{label}:</strong> <span style='color:{color}'>{val}</span></div>"
+                rb_html += (f"<div><strong style='color:#1e293b'>{label}:</strong> "
+                            f"<span style='color:{color}'>{val}</span></div>")
             rb_html += "</div>"
 
-            hired_badge_color = "#16a34a" if r["hired_count"] > 0 else "#94a3b8"
-            planned_badge_color = "#d97706" if r["planned_count"] > 0 else "#94a3b8"
+            rows_html += (
+                f"<tr>"
+                f"<td {TD}><strong>{r['vn']}</strong></td>"
+                f"<td {TD} style='text-align:center'><strong>{r['current_emp']}</strong></td>"
+                f"<td {TD} style='text-align:center'>{count_badge(r['hired_count'],'#16a34a')}</td>"
+                f"<td {TDW}>{r['hired_desc']}</td>"
+                f"<td {TD} style='text-align:center'>{count_badge(r['h26_count'],'#16a34a')}</td>"
+                f"<td {TDW}>{r['h26_desc']}</td>"
+                f"<td {TD} style='text-align:center'>{count_badge(r['h27_count'],'#16a34a')}</td>"
+                f"<td {TDW}>{r['h27_desc']}</td>"
+                f"<td {TD} style='text-align:center'>{count_badge(r['p26_count'],'#d97706')}</td>"
+                f"<td {TDW}>{r['p26_desc']}</td>"
+                f"<td {TD} style='text-align:center'>{count_badge(r['p27_count'],'#d97706')}</td>"
+                f"<td {TDW}>{r['p27_desc']}</td>"
+                f"<td {TDW}>{rb_html}</td>"
+                f"</tr>"
+            )
 
-            rows_html += f"""<tr>
-                <td {TD}><strong>{r['vn']}</strong></td>
-                <td {TD} style='text-align:center'>
-                    <span style='font-weight:800;font-size:1rem;color:{hired_badge_color}'>
-                    {r['hired_count']}</span></td>
-                <td {TDW}>{r['hired_desc']}</td>
-                <td {TD} style='text-align:center'>
-                    <span style='font-weight:800;font-size:1rem;color:{planned_badge_color}'>
-                    {r['planned_count']}</span></td>
-                <td {TDW}>{r['planned_desc']}</td>
-                <td {TDW}>{rb_html}</td>
-            </tr>"""
+        st.markdown(
+            f"<div style='overflow-x:auto;max-height:650px;border:1px solid #e2e8f0;"
+            f"border-radius:10px;overflow-y:auto'>"
+            f"<table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>"
+            f"<thead>"
+            f"<tr>"
+            f"<th {TH} rowspan='2'>Company</th>"
+            f"<th {TH} rowspan='2'>Current<br>Employees</th>"
+            f"<th {TH} colspan='2' style='text-align:center'>Total Hired</th>"
+            f"<th {THG} colspan='2'>Hired in 2026</th>"
+            f"<th {THG} colspan='2'>Hired in 2027</th>"
+            f"<th {THA} colspan='2'>Planned 2026</th>"
+            f"<th {THA} colspan='2'>Planned 2027</th>"
+            f"<th {TH} rowspan='2'>Role Breakdown<br>by Function</th>"
+            f"</tr><tr>"
+            f"<th {TH}>Count</th><th {TH}>Description</th>"
+            f"<th {THG}>Count</th><th {THG}>Description</th>"
+            f"<th {THG}>Count</th><th {THG}>Description</th>"
+            f"<th {THA}>Count</th><th {THA}>Description</th>"
+            f"<th {THA}>Count</th><th {THA}>Description</th>"
+            f"</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            f"</table></div>",
+            unsafe_allow_html=True
+        )
 
-        st.markdown(f"""<div style='overflow-x:auto;max-height:650px;
-        border:1px solid #e2e8f0;border-radius:10px;overflow-y:auto'>
-        <table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif'>
-        <thead><tr>
-            <th {TH}>Company Name</th>
-            <th {TH}>Resources Hired<br>(Count)</th>
-            <th {TH}>Resources Hired<br>(Description)</th>
-            <th {TH}>6-Mo Hiring Plan<br>(Count)</th>
-            <th {TH}>6-Mo Hiring Plan<br>(Description)</th>
-            <th {TH}>Role Breakdown by Function</th>
-        </tr></thead><tbody>{rows_html}</tbody></table></div>""",
-        unsafe_allow_html=True)
-
-        # ── Download CSV ───────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
-        def esc_ph(v): return f'"{str(v).replace(chr(34), chr(39))}"'
-        csv_lines = ["Company,Hired Count,Hired Description,Planned Count,Planned Description,"
-                     "GTM,Product,Operations,Supply Chain,HR,Finance"]
+        def esc_ph(v): return f'"{str(v).replace(chr(34), chr(39))}"' 
+        csv_lines = [
+            "Company,Current Employees,Total Hired,Hired Desc,"
+            "Hired 2026,Hired 2026 Desc,Hired 2027,Hired 2027 Desc,"
+            "Planned 2026,Planned 2026 Desc,Planned 2027,Planned 2027 Desc,"
+            "GTM,Product,Operations,Supply Chain,HR,Finance"
+        ]
         for r in rows:
             rb = r["role_breakdown"]
             csv_lines.append(
-                f"{esc_ph(r['vn'])},{esc_ph(r['hired_count'])},{esc_ph(r['hired_desc'])},"
-                f"{esc_ph(r['planned_count'])},{esc_ph(r['planned_desc'])},"
-                f"{esc_ph(na(rb.get('gtm')))},{esc_ph(na(rb.get('product')))},"
-                f"{esc_ph(na(rb.get('operations')))},{esc_ph(na(rb.get('supply_chain')))},"
-                f"{esc_ph(na(rb.get('hr')))},{esc_ph(na(rb.get('finance')))}"
+                f"{esc_ph(r['vn'])},{esc_ph(r['current_emp'])},"
+                f"{esc_ph(r['hired_count'])},{esc_ph(r['hired_desc'])},"
+                f"{esc_ph(r['h26_count'])},{esc_ph(r['h26_desc'])},"
+                f"{esc_ph(r['h27_count'])},{esc_ph(r['h27_desc'])},"
+                f"{esc_ph(r['p26_count'])},{esc_ph(r['p26_desc'])},"
+                f"{esc_ph(r['p27_count'])},{esc_ph(r['p27_desc'])},"
+                f"{esc_ph(na(rb.get('gtm')))},{esc_ph(na(rb.get('product')))},"                f"{esc_ph(na(rb.get('operations')))},{esc_ph(na(rb.get('supply_chain')))},"                f"{esc_ph(na(rb.get('hr')))},{esc_ph(na(rb.get('finance')))}"
             )
         st.download_button(
             "⬇️ Download as CSV",
@@ -2702,3 +2769,4 @@ with tab_people:
             mime="text/csv",
             key="ph_download"
         )
+
