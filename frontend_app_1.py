@@ -540,35 +540,16 @@ def get_stage_bucket(pct):
         return "0–25%"
     except: return "Unknown"
 
-# ── top bar — settings inline, no sidebar ──────────────
-st.markdown(
-    "<div style='background:#4F46E5;border-radius:12px;padding:16px 24px;"
-    "margin-bottom:20px;display:flex;align-items:center;justify-content:space-between'>"
-    "<div>"
-    "<div style='color:#fff;font-size:1.1rem;font-weight:700'>🚀 Portfolio Success Intelligence</div>"
-    "<div style='color:#C7D2FE;font-size:0.78rem;margin-top:2px'>"
-    "NEN Accelerate · Resources Network · Knowledge Repository</div>"
-    "</div>"
-    "<div style='color:#A5B4FC;font-size:0.75rem;text-align:right'>"
-    "Manager - Partner Success</div>"
-    "</div>",
-    unsafe_allow_html=True
-)
-
-tb1, tb2, tb3 = st.columns([2, 2, 4])
+# ── settings controls — compact single row ─────────────
+tb1, tb2, tb3 = st.columns([1.5, 1.5, 5])
 with tb1:
-    use_sp = st.toggle("☁️ Use SharePoint", value=bool(ENV_CLIENT_ID), key="use_sp_top")
+    use_sp = st.toggle("☁️ SharePoint", value=bool(ENV_CLIENT_ID), key="use_sp_top")
 with tb2:
-    if use_sp and ENV_CLIENT_ID:
-        st.success("✅ SharePoint connected", icon=None)
-    elif use_sp:
-        st.warning("Add Azure credentials")
-with tb3:
     api_key = ENV_API_KEY or st.text_input(
-        "Anthropic API Key", type="password", key="api_key_top",
-        label_visibility="collapsed", placeholder="Enter Anthropic API key...")
-
-st.markdown("<hr style='margin:8px 0 20px'>", unsafe_allow_html=True)
+        "API Key", type="password", key="api_key_top",
+        label_visibility="collapsed", placeholder="Anthropic API key...")
+with tb3:
+    pass  # spacer
 
 # ── SP connection ──────────────────────────────────────
 sp_reader = None
@@ -996,31 +977,38 @@ for mn, mdata in mentor_insights_unified.items():
 
 repo_loaded = signals_repo is not None or feedback_repo is not None
 
-# ── header + repo status ───────────────────────────────
-hc1, hc2 = st.columns([3,1])
-with hc1:
-    st.markdown("""
-    <div style='display:flex;align-items:center;gap:12px;margin-bottom:4px'>
-        <span style='font-size:2rem'>🚀</span>
-        <div>
-            <div style='font-size:1.4rem;font-weight:700;color:#1e293b'>
-                Portfolio Success Intelligence</div>
-            <div style='font-size:0.82rem;color:#64748b'>
-                NEN Accelerate · Resources Network · Knowledge Repository</div>
-        </div>
-    </div>""", unsafe_allow_html=True)
-with hc2:
-    if signals_repo:
-        gen_at = signals_repo.get("generated_at","—")
-        st.success(f"✅ Signals repo loaded\n{gen_at}")
-    else:
-        st.warning(f"⚠️ Signals repo not found\n{sig_err or ''}")
-    if feedback_repo:
-        st.success(f"✅ Feedback repo loaded")
-    else:
-        st.info(f"ℹ️ Feedback repo not found\n{fb_err or ''}")
+# ── compact header banner ───────────────────────────────
+sig_status  = f"✅ Signals · {signals_repo.get('generated_at','—')[:10]}" if signals_repo else "⚠️ Signals missing"
+fb_status   = "✅ Feedback loaded" if feedback_repo else "ℹ️ Feedback missing"
+jrn_status  = "✅ Journey data" if journey_data else "⬜ No journey data"
+sig_color   = "#86EFAC" if signals_repo else "#FDE68A"
+fb_color    = "#86EFAC" if feedback_repo else "#C7D2FE"
 
-st.divider()
+st.markdown(
+    f"<div style='background:#4F46E5;border-radius:10px;padding:14px 20px;"
+    f"margin-bottom:16px;display:flex;align-items:center;"
+    f"justify-content:space-between;flex-wrap:wrap;gap:10px'>"
+    f"<div style='display:flex;align-items:center;gap:10px'>"
+    f"<span style='font-size:1.4rem'>🚀</span>"
+    f"<div>"
+    f"<div style='color:#fff;font-size:0.95rem;font-weight:700;line-height:1.2'>"
+    f"Portfolio Success Intelligence</div>"
+    f"<div style='color:#C7D2FE;font-size:0.72rem;margin-top:1px'>"
+    f"NEN Accelerate · Resources Network</div>"
+    f"</div></div>"
+    f"<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+    f"<span style='background:rgba(255,255,255,0.12);color:{sig_color};"
+    f"padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:500'>"
+    f"{sig_status}</span>"
+    f"<span style='background:rgba(255,255,255,0.12);color:{fb_color};"
+    f"padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:500'>"
+    f"{fb_status}</span>"
+    f"<span style='background:rgba(255,255,255,0.12);color:#C7D2FE;"
+    f"padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:500'>"
+    f"{jrn_status}</span>"
+    f"</div></div>",
+    unsafe_allow_html=True
+)
 
 if not repo_loaded:
     st.error("❌ No Knowledge Repository found on SharePoint. Run the Backend app to generate and upload the repository files first.")
