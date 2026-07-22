@@ -56,6 +56,83 @@ html, body, [class*="css"] {
   color: #1E293B;
 }
 
+/* ══ KILL STREAMLIT DEFAULT SPACING ════════════════════
+   This is the main cause of "spread out" look.
+   Streamlit adds gap/margin to every element wrapper.
+   We override all of it here.
+══════════════════════════════════════════════════════ */
+
+/* Remove gap between all stacked elements */
+div[data-testid="stVerticalBlock"] > div {
+  gap: 0 !important;
+}
+div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
+  gap: 0 !important;
+}
+
+/* Tighten every block element's bottom margin */
+div[data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; padding-bottom: 0 !important; }
+div[data-testid="stMarkdownContainer"] p { margin-bottom: 4px !important; margin-top: 0 !important; }
+div[data-testid="stMarkdownContainer"] h1 { margin-bottom: 2px !important; margin-top: 0 !important; }
+div[data-testid="stMarkdownContainer"] h2 { margin-bottom: 4px !important; margin-top: 0 !important; }
+div[data-testid="stMarkdownContainer"] h3 { margin-bottom: 4px !important; margin-top: 0 !important; }
+
+/* Column gaps */
+div[data-testid="stHorizontalBlock"] {
+  gap: 12px !important;
+  align-items: stretch !important;
+}
+
+/* Element containers — remove padding top/bottom */
+div[class*="element-container"] {
+  margin-bottom: 6px !important;
+  margin-top: 0 !important;
+}
+
+/* Metric containers — tighten */
+div[data-testid="metric-container"] {
+  padding: 12px 10px !important;
+  margin: 0 !important;
+}
+div[data-testid="stMetricValue"] { line-height: 1.1 !important; }
+div[data-testid="stMetricLabel"] { line-height: 1.2 !important; margin-top: 3px !important; }
+
+/* Tabs — no extra padding above */
+div[data-testid="stTabs"] { margin-top: 0 !important; }
+.stTabs [data-baseweb="tab-panel"] { padding-top: 12px !important; }
+
+/* Buttons — no extra wrapper margin */
+div[data-testid="stButton"] { margin: 0 !important; }
+div[data-testid="stButton"] > button { width: auto !important; }
+
+/* Selectbox / input — tighten */
+div[data-testid="stSelectbox"] { margin-bottom: 6px !important; }
+div[data-testid="stTextInput"]  { margin-bottom: 6px !important; }
+
+/* Caption — tight */
+div[data-testid="stCaptionContainer"] { margin: 0 0 4px 0 !important; padding: 0 !important; }
+
+/* Alert boxes */
+div[data-testid="stAlert"] { margin: 6px 0 !important; padding: 8px 12px !important; }
+
+/* Expander — tighten summary */
+details > summary { padding: 8px 12px !important; }
+.stExpander { margin-bottom: 6px !important; }
+
+/* Progress bar */
+div[data-testid="stProgressBar"] { margin: 4px 0 !important; }
+
+/* Divider */
+div[data-testid="stDecoration"] { margin: 8px 0 !important; }
+
+/* Dialog */
+div[data-testid="stModal"] { padding: 20px !important; }
+
+/* Remove Streamlit footer */
+footer { display: none !important; }
+#MainMenu { display: none !important; }
+.viewerBadge_container__1QSob { display: none !important; }
+
 /* ══ PAGE BACKGROUND & CONTAINER ═══════════════════════ */
 .stApp { background: #F1F5F9 !important; }
 
@@ -70,15 +147,19 @@ header[data-testid="stHeader"] { display: none !important; height: 0 !important;
 /* Remove top padding that Streamlit adds for the header */
 .main > div:first-child { padding-top: 0 !important; }
 
-/* Main content area — clean padding matching HTML showcase */
+/* Main content area — compact matching HTML showcase */
 .main .block-container {
-  padding: 24px 40px !important;
+  padding: 16px 32px 24px 32px !important;
   max-width: 1200px !important;
   margin: 0 auto !important;
 }
 
 /* Full width when sidebar is gone */
 .main { margin-left: 0 !important; }
+
+/* Remove Streamlit's own top padding for the header */
+.main > div { padding-top: 0 !important; }
+section.main > div.block-container { padding-top: 12px !important; }
 
 /* ══ PAGE COVER BANNER ══════════════════════════════════ */
 .cover-banner {
