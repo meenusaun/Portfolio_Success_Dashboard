@@ -73,8 +73,13 @@ p  { color: #475569; line-height: 1.6; }
   border: none !important; background: transparent !important;
 }
 .stTabs [aria-selected="true"] {
-  background: #4F46E5 !important; color: #fff !important;
+  background: #4F46E5 !important; color: #ffffff !important;
   border-radius: 8px;
+}
+.stTabs [aria-selected="true"] p,
+.stTabs [aria-selected="true"] span,
+.stTabs [aria-selected="true"] div {
+  color: #ffffff !important;
 }
 
 /* ── Metrics ── */
@@ -89,13 +94,16 @@ div[data-testid="metric-container"] {
 
 /* ── Buttons ── */
 .stButton > button {
-  background: #4F46E5 !important; color: #fff !important;
+  background: #4F46E5 !important; color: #ffffff !important;
   border: none !important; border-radius: 8px !important;
   font-weight: 500 !important; font-size: 0.83rem !important;
   padding: 6px 16px !important;
   transition: background .15s;
 }
-.stButton > button:hover { background: #4338CA !important; }
+.stButton > button:hover { background: #4338CA !important; color: #ffffff !important; }
+.stButton > button:active { background: #3730A3 !important; color: #ffffff !important; }
+.stButton > button p { color: #ffffff !important; }
+.stButton > button span { color: #ffffff !important; }
 
 /* ── Selectbox / text input ── */
 div[data-baseweb="select"] > div,
