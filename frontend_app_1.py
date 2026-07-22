@@ -26,7 +26,7 @@ ENV_TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
 ENV_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
 ENV_PASSWORD      = os.environ.get("APP_PASSWORD", "nen2026")
 
-SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
+SP_FOLDER        = "Documents/04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
@@ -46,37 +46,185 @@ st.set_page_config(
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-.stApp { background: #f5f7fa; }
-.main .block-container { padding: 1.5rem 2.5rem; max-width: 1600px; }
-section[data-testid="stSidebar"] { background: #ffffff !important; border-right: 1px solid #e2e8f0; }
-section[data-testid="stSidebar"] * { color: #1e293b !important; }
-div[data-testid="stMetricValue"] { color: #1e293b !important; font-weight: 700; font-size: 1.6rem; }
-div[data-testid="stMetricLabel"] { font-size: 0.82rem; color: #64748b; }
-.stProgress > div > div { background: #6366f1 !important; }
-h1,h2,h3,h4 { color: #1e293b !important; }
-.stExpander { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; margin-bottom: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
-.stTabs [data-baseweb="tab-list"] { gap: 4px; }
-.stTabs [data-baseweb="tab"] { padding: 8px 18px; border-radius: 8px; }
+
+/* ── Base ── */
+html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; }
+.stApp { background: #F1F5F9 !important; }
+.main .block-container { padding: 1.5rem 2rem; max-width: 1600px; }
+
+/* ── App header ── */
+header[data-testid="stHeader"] { background: #4F46E5 !important; }
+
+/* ── Typography ── */
+h1 { font-size: 1.4rem !important; font-weight: 600 !important; color: #1E293B !important; margin-bottom: 2px !important; }
+h2 { font-size: 1.1rem !important; font-weight: 600 !important; color: #1E293B !important; }
+h3 { font-size: 0.95rem !important; font-weight: 600 !important; color: #1E293B !important; }
+p  { color: #475569; line-height: 1.6; }
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 3px; background: #fff; padding: 6px 8px;
+  border-radius: 10px; border: 1px solid #E2E8F0;
+  margin-bottom: 16px;
+}
+.stTabs [data-baseweb="tab"] {
+  padding: 6px 14px; border-radius: 8px;
+  font-size: 0.82rem; font-weight: 500; color: #64748B;
+  border: none !important; background: transparent !important;
+}
+.stTabs [aria-selected="true"] {
+  background: #4F46E5 !important; color: #fff !important;
+  border-radius: 8px;
+}
+
+/* ── Metrics ── */
+div[data-testid="stMetricValue"] {
+  font-size: 1.6rem !important; font-weight: 700 !important; color: #4F46E5 !important;
+}
+div[data-testid="stMetricLabel"] { font-size: 0.78rem !important; color: #64748B !important; }
+div[data-testid="metric-container"] {
+  background: #EEF2FF; border-radius: 10px; padding: 14px 12px;
+  border: none; text-align: center;
+}
+
+/* ── Buttons ── */
+.stButton > button {
+  background: #4F46E5 !important; color: #fff !important;
+  border: none !important; border-radius: 8px !important;
+  font-weight: 500 !important; font-size: 0.83rem !important;
+  padding: 6px 16px !important;
+  transition: background .15s;
+}
+.stButton > button:hover { background: #4338CA !important; }
+
+/* ── Selectbox / text input ── */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div input {
+  border-radius: 8px !important; border-color: #E2E8F0 !important;
+  font-size: 0.82rem !important; background: #fff !important;
+}
+
+/* ── Expanders ── */
+.stExpander {
+  background: #fff !important; border: 1px solid #E2E8F0 !important;
+  border-radius: 10px !important; margin-bottom: 8px !important;
+}
+.stExpander [data-testid="stExpanderToggleIcon"] { color: #4F46E5 !important; }
+
+/* ── Dataframe ── */
+.stDataFrame { border: 1px solid #E2E8F0 !important; border-radius: 10px !important; }
+.stDataFrame thead th {
+  background: #F8FAFC !important; color: #64748B !important;
+  font-size: 0.78rem !important; font-weight: 600 !important;
+}
+
+/* ── Progress bar ── */
+.stProgress > div > div { background: #4F46E5 !important; border-radius: 4px !important; }
+
+/* ── Divider ── */
+hr { border-color: #E2E8F0 !important; margin: 12px 0 !important; }
+
+/* ── Info / warning / success messages ── */
+div[data-testid="stAlert"] { border-radius: 10px !important; font-size: 0.83rem !important; }
+
+/* ══════════════════════════════════════ */
+/*  CUSTOM COMPONENT CLASSES             */
+/* ══════════════════════════════════════ */
 
 /* RAG badges */
-.rag-green  { background:#dcfce7; color:#166534; padding:4px 14px; border-radius:20px; font-weight:700; font-size:0.83rem; display:inline-block; }
-.rag-amber  { background:#fef9c3; color:#854d0e; padding:4px 14px; border-radius:20px; font-weight:700; font-size:0.83rem; display:inline-block; }
-.rag-red    { background:#fee2e2; color:#991b1b; padding:4px 14px; border-radius:20px; font-weight:700; font-size:0.83rem; display:inline-block; }
-.rag-zero   { background:#f1f5f9; color:#64748b; padding:4px 14px; border-radius:20px; font-weight:700; font-size:0.83rem; display:inline-block; }
+.rag-green { background:#DCFCE7; color:#166534; padding:3px 12px; border-radius:20px; font-weight:700; font-size:0.8rem; display:inline-block; }
+.rag-amber { background:#FEF9C3; color:#854D0E; padding:3px 12px; border-radius:20px; font-weight:700; font-size:0.8rem; display:inline-block; }
+.rag-red   { background:#FEE2E2; color:#991B1B; padding:3px 12px; border-radius:20px; font-weight:700; font-size:0.8rem; display:inline-block; }
+.rag-zero  { background:#F1F5F9; color:#64748B; padding:3px 12px; border-radius:20px; font-weight:700; font-size:0.8rem; display:inline-block; }
 
 /* Signal badges */
-.sig-pos { background:#dcfce7; color:#166534; padding:2px 10px; border-radius:12px; font-size:0.77rem; font-weight:600; display:inline-block; margin:2px; }
-.sig-neg { background:#fee2e2; color:#991b1b; padding:2px 10px; border-radius:12px; font-size:0.77rem; font-weight:600; display:inline-block; margin:2px; }
-.sig-src { background:#e0e7ff; color:#3730a3; padding:2px 8px; border-radius:10px; font-size:0.72rem; display:inline-block; margin:2px; }
+.sig-pos { background:#DCFCE7; color:#166534; padding:2px 9px; border-radius:10px; font-size:0.76rem; font-weight:600; display:inline-block; margin:2px; }
+.sig-neu { background:#FEF9C3; color:#854D0E; padding:2px 9px; border-radius:10px; font-size:0.76rem; font-weight:600; display:inline-block; margin:2px; }
+.sig-neg { background:#FEE2E2; color:#991B1B; padding:2px 9px; border-radius:10px; font-size:0.76rem; font-weight:600; display:inline-block; margin:2px; }
+.sig-src { background:#EDE9FE; color:#5B21B6; padding:2px 8px; border-radius:8px; font-size:0.72rem; display:inline-block; margin:2px; }
 
-/* Card sections */
-.info-card { background:#ffffff; border:1px solid #e2e8f0; border-radius:12px; padding:20px 24px; margin-bottom:16px; }
-.section-label { font-size:0.72rem; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; }
-.venture-header { background: linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%); color:white; border-radius:12px; padding:20px 24px; margin-bottom:20px; }
-.session-card { background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:16px 20px; margin-bottom:12px; }
-.signal-row { padding:8px 0; border-bottom:1px solid #f1f5f9; }
+/* Cards */
+.info-card {
+  background: #fff; border: 1px solid #E2E8F0; border-radius: 10px;
+  padding: 16px 18px; margin-bottom: 12px;
+}
+.card-title {
+  font-size: 0.85rem; font-weight: 600; color: #1E293B; margin-bottom: 10px;
+}
+
+/* Section label (small caps above field) */
+.section-label {
+  font-size: 0.7rem; font-weight: 700; color: #94A3B8;
+  text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 5px;
+}
+
+/* Venture card header */
+.venture-header {
+  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+  color: #fff; border-radius: 10px; padding: 14px 18px; margin-bottom: 14px;
+}
+
+/* Session cards */
+.session-card {
+  background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 10px;
+}
+
+/* Signal rows */
+.signal-row { padding: 8px 0; border-bottom: 1px solid #F8FAFC; }
 .signal-row:last-child { border-bottom: none; }
+.signal-evidence {
+  font-size: 0.8rem; color: #64748B; font-style: italic;
+  margin-top: 4px; padding-left: 4px; line-height: 1.5;
+}
+
+/* Bar chart rows */
+.bar-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+.bar-label { font-size: 0.82rem; color: #334155; min-width: 160px; }
+.bar-wrap  { flex: 1; background: #E2E8F0; border-radius: 4px; height: 6px; overflow: hidden; }
+.bar-fill  { height: 100%; border-radius: 4px; background: #4F46E5; }
+.bar-count { font-size: 0.78rem; color: #64748B; min-width: 80px; text-align: right; }
+
+/* Direction list */
+.dir-item { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 6px; }
+.dir-num  {
+  background: #4F46E5; color: #fff; border-radius: 50%;
+  width: 20px; height: 20px; display: flex; align-items: center;
+  justify-content: center; font-size: 10px; font-weight: 600;
+  flex-shrink: 0; margin-top: 2px;
+}
+
+/* Problem badge */
+.prob-count {
+  background: #DCFCE7; color: #166534; padding: 3px 10px;
+  border-radius: 20px; font-size: 0.75rem; font-weight: 600;
+  white-space: nowrap; flex-shrink: 0;
+}
+
+/* Summary box */
+.summary-box {
+  background: #F8FAFC; border-left: 3px solid #4F46E5;
+  border-radius: 0 8px 8px 0; padding: 12px 14px;
+  font-size: 0.83rem; color: #334155; line-height: 1.7; margin-bottom: 12px;
+}
+
+/* NPS display */
+.nps-big { font-size: 3rem; font-weight: 700; line-height: 1; text-align: center; }
+.nps-label { font-size: 0.78rem; color: #64748B; text-align: center; margin-top: 4px; }
+
+/* Hub badge */
+.hub-badge {
+  background: #EEF2FF; color: #3730A3; padding: 2px 8px;
+  border-radius: 8px; font-size: 0.75rem; font-weight: 500;
+}
+
+/* Mentor card */
+.mentor-card {
+  background: #fff; border: 1px solid #E2E8F0; border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 10px;
+}
 </style>
 """, unsafe_allow_html=True)
 
