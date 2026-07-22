@@ -40,7 +40,7 @@ st.set_page_config(
     page_title="Portfolio Success Intelligence",
     page_icon="🚀",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # ── CSS — mirrors HTML showcase exactly ───────────────
@@ -58,13 +58,27 @@ html, body, [class*="css"] {
 
 /* ══ PAGE BACKGROUND & CONTAINER ═══════════════════════ */
 .stApp { background: #F1F5F9 !important; }
-section[data-testid="stSidebar"] { display: none !important; }
-header[data-testid="stHeader"]   { display: none !important; }
+
+/* Hide sidebar completely */
+section[data-testid="stSidebar"],
+section[data-testid="stSidebarNav"],
+div[data-testid="collapsedControl"] { display: none !important; width: 0 !important; }
+
+/* Hide Streamlit top header bar */
+header[data-testid="stHeader"] { display: none !important; height: 0 !important; }
+
+/* Remove top padding that Streamlit adds for the header */
+.main > div:first-child { padding-top: 0 !important; }
+
+/* Main content area — clean padding matching HTML showcase */
 .main .block-container {
   padding: 24px 40px !important;
   max-width: 1200px !important;
   margin: 0 auto !important;
 }
+
+/* Full width when sidebar is gone */
+.main { margin-left: 0 !important; }
 
 /* ══ PAGE COVER BANNER ══════════════════════════════════ */
 .cover-banner {
@@ -445,17 +459,35 @@ def get_stage_bucket(pct):
         return "0–25%"
     except: return "Unknown"
 
-# ── sidebar ────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## ⚙️ Settings")
-    use_sp = st.toggle("☁️ Use SharePoint", value=bool(ENV_CLIENT_ID))
+# ── top bar — settings inline, no sidebar ──────────────
+st.markdown(
+    "<div style='background:#4F46E5;border-radius:12px;padding:16px 24px;"
+    "margin-bottom:20px;display:flex;align-items:center;justify-content:space-between'>"
+    "<div>"
+    "<div style='color:#fff;font-size:1.1rem;font-weight:700'>🚀 Portfolio Success Intelligence</div>"
+    "<div style='color:#C7D2FE;font-size:0.78rem;margin-top:2px'>"
+    "NEN Accelerate · Resources Network · Knowledge Repository</div>"
+    "</div>"
+    "<div style='color:#A5B4FC;font-size:0.75rem;text-align:right'>"
+    "Manager - Partner Success</div>"
+    "</div>",
+    unsafe_allow_html=True
+)
+
+tb1, tb2, tb3 = st.columns([2, 2, 4])
+with tb1:
+    use_sp = st.toggle("☁️ Use SharePoint", value=bool(ENV_CLIENT_ID), key="use_sp_top")
+with tb2:
     if use_sp and ENV_CLIENT_ID:
-        st.success("✅ SharePoint configured")
+        st.success("✅ SharePoint connected", icon=None)
     elif use_sp:
-        st.warning("Add Azure credentials to secrets")
-    api_key = ENV_API_KEY or st.text_input("Anthropic API Key", type="password")
-    st.markdown("---")
-    st.caption("NEN Accelerate · Portfolio Intelligence\nResources Network Team")
+        st.warning("Add Azure credentials")
+with tb3:
+    api_key = ENV_API_KEY or st.text_input(
+        "Anthropic API Key", type="password", key="api_key_top",
+        label_visibility="collapsed", placeholder="Enter Anthropic API key...")
+
+st.markdown("<hr style='margin:8px 0 20px'>", unsafe_allow_html=True)
 
 # ── SP connection ──────────────────────────────────────
 sp_reader = None
