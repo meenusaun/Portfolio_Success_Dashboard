@@ -9,7 +9,7 @@ class SharePointReader:
     GRAPH_URL  = "https://graph.microsoft.com/v1.0"
     # Personal OneDrive site
     SP_HOSTNAME = "wadhwanifoundation-my.sharepoint.com"
-    SP_SITEPATH = "/personal/meenakshi_singh_wadhwanifoundation_org"
+    SP_SITEPATH = "/personal/meenakshi_singh_nen_org"
 
     def __init__(self, client_id, tenant_id, client_secret):
         self.client_id     = client_id
