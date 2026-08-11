@@ -1016,15 +1016,12 @@ if not repo_loaded:
     st.stop()
 
 # ── main tabs ──────────────────────────────────────────
-tab_definitions, tab_company, tab_scores, tab_overview, tab_ventures, tab_mentors, tab_value, tab_people = st.tabs([
+tab_definitions, tab_overview, tab_companies, tab_ventures, tab_intelligence = st.tabs([
     "📖  How It Works",
-    "🏢  Company Basics",
-    "🎯  Company & Score",
     "📊  Portfolio Overview",
-    "🏢  Venture Cards",
-    "👥  Mentor Insights",
-    "🌱  Value Delivered",
-    "👷  People Hired"
+    "🏢  Companies",
+    "🏗  Venture Cards",
+    "🔬  Intelligence",
 ])
 
 # ══════════════════════════════════════════════════════
@@ -1232,8 +1229,11 @@ with tab_definitions:
     )
 
 # ══════════════════════════════════════════════════════
-#  TAB 2: COMPANY BASICS
+#  TAB: COMPANIES  (sub-tabs: Company Basics | Company & Score)
 # ══════════════════════════════════════════════════════
+with tab_companies:
+    tab_company, tab_scores = st.tabs(["🏢 Company Basics", "🎯 Company & Score"])
+
 with tab_company:
     st.title("🏢 Company Basics")
     st.divider()
@@ -2484,8 +2484,16 @@ QUESTION: {ai_question}"""
 
 
 # ══════════════════════════════════════════════════════
-#  TAB 3: MENTOR INSIGHTS
+#  TAB: INTELLIGENCE  (sub-tabs: Mentor Insights | Value Delivered | Call Intelligence | People Hired)
 # ══════════════════════════════════════════════════════
+with tab_intelligence:
+    tab_mentors, tab_value, tab_call_intel, tab_people = st.tabs([
+        "👥 Mentor Insights",
+        "🌱 Value Delivered",
+        "📞 Call Intelligence",
+        "👷 People Hired",
+    ])
+
 with tab_mentors:
     st.title("👥 Mentor Insights")
     st.divider()
@@ -2711,7 +2719,7 @@ with tab_mentors:
 
 
 # ══════════════════════════════════════════════════════
-#  TAB 6: VALUE DELIVERED
+#  INTELLIGENCE SUB-TAB: VALUE DELIVERED
 # ══════════════════════════════════════════════════════
 with tab_value:
     st.title("🌱 Value Delivered to Beneficiaries")
@@ -2993,7 +3001,316 @@ with tab_value:
 
 
 # ══════════════════════════════════════════════════════
-#  TAB: PEOPLE HIRED
+#  INTELLIGENCE SUB-TAB: CALL INTELLIGENCE
+# ══════════════════════════════════════════════════════
+with tab_call_intel:
+    st.title("📞 Call Intelligence")
+    st.caption("Investment readiness signals and capability gap analysis — extracted from all venture call transcripts")
+    st.divider()
+
+    if not signals_repo:
+        st.warning("Signals repository not found. Run Backend first to generate signals_repository.json.")
+    elif not client:
+        st.warning("Add ANTHROPIC_API_KEY to use Call Intelligence.")
+    else:
+        CI_KEY = "call_intelligence_result"
+
+        # ── Controls ──────────────────────────────────
+        ci_f1, ci_f2, ci_f3 = st.columns([2, 2, 3])
+        ci_hub    = ci_f1.selectbox("Filter by Hub", ["All"] + sorted(set(
+            v.get("hub","—") for v in venture_rag.values() if v.get("hub","—") != "—"
+        )), key="ci_hub")
+        ci_search = ci_f2.text_input("🔍 Search Venture", key="ci_search")
+        ci_f3.markdown("<br>", unsafe_allow_html=True)
+
+        gen_ci, regen_ci = ci_f3.columns(2)
+        run_ci = gen_ci.button("🔍 Analyse All Ventures", key="ci_run", use_container_width=True)
+        if CI_KEY in st.session_state:
+            if regen_ci.button("🔄 Regenerate", key="ci_regen", use_container_width=True):
+                del st.session_state[CI_KEY]
+                st.rerun()
+
+        # ── Run analysis ──────────────────────────────
+        if run_ci:
+            vsummary = signals_repo.get("venture_summary", {})
+            ci_results = {}
+            progress_bar = st.progress(0)
+            status_txt   = st.empty()
+            ventures_to_process = list(vsummary.items())
+            total_v = len(ventures_to_process)
+
+            for vi, (vname, vdata) in enumerate(ventures_to_process):
+                status_txt.caption(f"Analysing {vname} ({vi+1}/{total_v})...")
+                progress_bar.progress((vi+1)/total_v)
+
+                signals  = vdata.get("signals", {})
+                m_sigs   = signals.get("momentum", [])
+                i_sigs   = signals.get("investment", [])
+                hub      = vdata.get("hub", "—")
+                sprint   = vdata.get("sprint", "—")
+
+                # Build compact context from signals + notes
+                m_text = "\n".join(
+                    f"  [{s.get('category','?')}] {s.get('type','')}: {s.get('evidence','')}"
+                    for s in m_sigs
+                )
+                i_text = "\n".join(
+                    f"  [{s.get('category','?')}] {s.get('type','')}: {s.get('evidence','')}"
+                    for s in i_sigs
+                )
+
+                CALL_INTEL_PROMPT = f"""You are a portfolio analyst for NEN Accelerate.
+
+Venture: {vname} | Hub: {hub} | Sprint: {sprint}
+
+SIGNALS FROM CALL TRANSCRIPTS AND DOCUMENTS:
+
+Sprint Momentum Signals:
+{m_text or "None found"}
+
+Self Investment Signals:
+{i_text or "None found"}
+
+TASK — Perform TWO analyses:
+
+ANALYSIS 1 — INVESTMENT READINESS SIGNALS
+Identify signals that indicate the venture is ready to invest further in its growth.
+Focus on: hiring leadership, building a sales team, onboarding distributors, entering new markets,
+acquiring equipment or technology, scaling operations, seeking finance.
+
+ANALYSIS 2 — CAPABILITY GAP ASSESSMENT
+For every investment readiness signal you identified, assess whether the venture already has
+the required capability or resource in place based on the evidence above.
+- If the capability EXISTS → mark as "No Gap"
+- If the capability is MISSING or PARTIAL → mark as "Gap" and describe what is missing
+
+GAP CATEGORIES: HR, Distribution, Finance, Legal/Compliance, Technology, Operations, GTM/Sales, Other
+
+Return ONLY valid JSON in this exact format:
+{{
+  "investment_readiness_signals": [
+    {{
+      "signal": "brief signal title",
+      "evidence": "exact quote or paraphrase from documents",
+      "category": "HR|Distribution|Finance|Legal/Compliance|Technology|Operations|GTM/Sales|Other",
+      "readiness_level": "High|Medium|Low"
+    }}
+  ],
+  "capability_gaps": [
+    {{
+      "signal": "the investment readiness signal this gap relates to",
+      "category": "HR|Distribution|Finance|Legal/Compliance|Technology|Operations|GTM/Sales|Other",
+      "gap_status": "Gap|No Gap",
+      "gap_description": "what is missing or what exists",
+      "evidence": "supporting evidence from documents"
+    }}
+  ],
+  "summary": "2-3 sentence overall assessment of this venture's investment readiness and key gaps"
+}}
+
+If no investment readiness signals found, return empty arrays with summary "No investment readiness signals found in available documents." """
+
+                try:
+                    resp = client.messages.create(
+                        model="claude-sonnet-4-5",
+                        max_tokens=1500,
+                        system=[{
+                            "type": "text",
+                            "text": "You are a portfolio analyst. Return only valid JSON. No preamble, no markdown fences.",
+                            "cache_control": {"type": "ephemeral"}
+                        }],
+                        messages=[{"role": "user", "content": CALL_INTEL_PROMPT}]
+                    )
+                    raw = resp.content[0].text.strip()
+                    raw = re.sub(r"```json|```", "", raw).strip()
+                    parsed = json.loads(raw)
+                    parsed["hub"] = hub
+                    parsed["sprint"] = sprint
+                    ci_results[vname] = parsed
+                except Exception as e:
+                    ci_results[vname] = {
+                        "hub": hub, "sprint": sprint,
+                        "investment_readiness_signals": [],
+                        "capability_gaps": [],
+                        "summary": f"Error during analysis: {e}"
+                    }
+
+            progress_bar.empty()
+            status_txt.empty()
+            st.session_state[CI_KEY] = ci_results
+            st.rerun()
+
+        # ── Display results ───────────────────────────
+        if CI_KEY in st.session_state:
+            ci_results = st.session_state[CI_KEY]
+
+            # Apply filters
+            filtered_ci = {
+                vn: vdata for vn, vdata in ci_results.items()
+                if (ci_hub == "All" or vdata.get("hub") == ci_hub)
+                and (not ci_search or ci_search.lower() in vn.lower())
+            }
+
+            # ── Portfolio summary metrics ──────────────
+            total_signals = sum(
+                len(v.get("investment_readiness_signals", [])) for v in filtered_ci.values()
+            )
+            total_gaps = sum(
+                sum(1 for g in v.get("capability_gaps", []) if g.get("gap_status") == "Gap")
+                for v in filtered_ci.values()
+            )
+            ventures_with_gaps = sum(
+                1 for v in filtered_ci.values()
+                if any(g.get("gap_status") == "Gap" for g in v.get("capability_gaps", []))
+            )
+
+            # Gap counts by category
+            gap_by_cat = {}
+            for vdata in filtered_ci.values():
+                for g in vdata.get("capability_gaps", []):
+                    if g.get("gap_status") == "Gap":
+                        cat = g.get("category", "Other")
+                        gap_by_cat[cat] = gap_by_cat.get(cat, 0) + 1
+
+            pm1, pm2, pm3, pm4 = st.columns(4)
+            pm1.metric("Ventures Analysed",         len(filtered_ci))
+            pm2.metric("Investment Readiness Signals", total_signals)
+            pm3.metric("Capability Gaps Identified",   total_gaps)
+            pm4.metric("Ventures with Gaps",           ventures_with_gaps)
+
+            st.divider()
+
+            # ── Gap by category bar chart ──────────────
+            if gap_by_cat:
+                st.markdown("### ⚠️ Gaps by Category (Portfolio View)")
+                max_gap = max(gap_by_cat.values()) or 1
+                gc_cols = st.columns(2)
+                for idx, (cat, count) in enumerate(
+                    sorted(gap_by_cat.items(), key=lambda x: -x[1])
+                ):
+                    pct = round(count / max_gap * 100)
+                    with gc_cols[idx % 2]:
+                        st.markdown(
+                            f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:10px'>"
+                            f"<div style='min-width:160px;font-size:0.83rem;font-weight:600;color:#1e293b'>{cat}</div>"
+                            f"<div style='flex:1;background:#e2e8f0;border-radius:4px;height:8px;overflow:hidden'>"
+                            f"<div style='background:#dc2626;height:100%;width:{pct}%'></div></div>"
+                            f"<div style='min-width:60px;font-size:0.8rem;color:#dc2626;font-weight:700'>"
+                            f"{count} gap{'s' if count!=1 else ''}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+
+                st.divider()
+
+            # ── Per-venture detail ─────────────────────
+            st.markdown("### 🏢 Venture-level Detail")
+            st.caption("Showing ventures with investment readiness signals — sorted by gap count")
+
+            sorted_ventures = sorted(
+                filtered_ci.items(),
+                key=lambda x: sum(
+                    1 for g in x[1].get("capability_gaps",[])
+                    if g.get("gap_status") == "Gap"
+                ),
+                reverse=True
+            )
+
+            for vname, vdata in sorted_ventures:
+                ir_signals = vdata.get("investment_readiness_signals", [])
+                gaps       = vdata.get("capability_gaps", [])
+                summary    = vdata.get("summary", "")
+                hub_v      = vdata.get("hub", "—")
+                gap_count  = sum(1 for g in gaps if g.get("gap_status") == "Gap")
+                nogap_count= sum(1 for g in gaps if g.get("gap_status") == "No Gap")
+
+                if not ir_signals and not gaps:
+                    continue  # Skip ventures with no signals
+
+                gap_badge = (
+                    f"<span style='background:#fee2e2;color:#991b1b;padding:2px 10px;"
+                    f"border-radius:12px;font-size:0.78rem;font-weight:700'>"
+                    f"⚠️ {gap_count} gap(s)</span>"
+                    if gap_count > 0 else
+                    f"<span style='background:#dcfce7;color:#166534;padding:2px 10px;"
+                    f"border-radius:12px;font-size:0.78rem;font-weight:700'>✅ No gaps</span>"
+                )
+
+                with st.expander(
+                    f"**{vname}** · {hub_v} · {len(ir_signals)} signal(s) · {gap_count} gap(s)"
+                ):
+                    st.markdown(
+                        f"<div style='background:#f8fafc;border-left:3px solid #6366f1;"
+                        f"border-radius:0 8px 8px 0;padding:10px 14px;font-size:0.83rem;"
+                        f"color:#334155;margin-bottom:14px'>{summary}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                    ci_col1, ci_col2 = st.columns(2)
+
+                    with ci_col1:
+                        st.markdown(
+                            f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
+                            f"💡 Investment Readiness Signals ({len(ir_signals)})</div>",
+                            unsafe_allow_html=True
+                        )
+                        for sig in ir_signals:
+                            rl = sig.get("readiness_level","Medium")
+                            rl_color = {"High":"#16a34a","Medium":"#d97706","Low":"#dc2626"}.get(rl,"#64748b")
+                            st.markdown(
+                                f"<div style='background:#fff;border:1px solid #e2e8f0;"
+                                f"border-radius:8px;padding:10px 12px;margin-bottom:8px'>"
+                                f"<div style='display:flex;justify-content:space-between;align-items:center'>"
+                                f"<span style='font-weight:600;font-size:0.83rem;color:#1e293b'>"
+                                f"{sig.get('signal','')}</span>"
+                                f"<span style='background:{rl_color}22;color:{rl_color};"
+                                f"padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700'>"
+                                f"{rl}</span></div>"
+                                f"<div style='font-size:0.78rem;color:#64748b;margin-top:4px'>"
+                                f"🏷 {sig.get('category','')} &nbsp;·&nbsp; "
+                                f"{sig.get('evidence','')[:150]}</div>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+
+                    with ci_col2:
+                        st.markdown(
+                            f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
+                            f"🔍 Capability Gap Assessment ({gap_count} gaps / {nogap_count} covered)</div>",
+                            unsafe_allow_html=True
+                        )
+                        for gap in gaps:
+                            is_gap = gap.get("gap_status") == "Gap"
+                            bg     = "#fee2e2" if is_gap else "#dcfce7"
+                            fg     = "#991b1b" if is_gap else "#166534"
+                            icon   = "⚠️" if is_gap else "✅"
+                            st.markdown(
+                                f"<div style='background:{bg};border-radius:8px;"
+                                f"padding:10px 12px;margin-bottom:8px'>"
+                                f"<div style='display:flex;justify-content:space-between;"
+                                f"align-items:center;margin-bottom:4px'>"
+                                f"<span style='font-weight:600;font-size:0.83rem;color:{fg}'>"
+                                f"{icon} {gap.get('signal','')}</span>"
+                                f"<span style='background:rgba(0,0,0,0.08);color:{fg};"
+                                f"padding:1px 7px;border-radius:8px;font-size:0.72rem'>"
+                                f"{gap.get('category','')}</span></div>"
+                                f"<div style='font-size:0.79rem;color:#334155'>"
+                                f"{gap.get('gap_description','')}</div>"
+                                f"<div style='font-size:0.72rem;color:#64748b;margin-top:3px'>"
+                                f"{gap.get('evidence','')[:120]}</div>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+        else:
+            st.info(
+                "Click **🔍 Analyse All Ventures** to extract investment readiness signals "
+                "and identify capability gaps across your portfolio. "
+                "Analysis runs on all venture transcripts and documents already in the signals repository."
+            )
+
+
+# ══════════════════════════════════════════════════════
+#  INTELLIGENCE SUB-TAB: PEOPLE HIRED
 # ══════════════════════════════════════════════════════
 with tab_people:
     st.title("👷 People Hired")
