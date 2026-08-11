@@ -1033,3 +1033,251 @@ Use empty arrays [] if nothing found. Do NOT invent — only extract what is exp
         "planned_2027_description":    desc(all_planned_2027),
         "role_breakdown":              role_breakdown,
     }
+
+
+def extract_call_intelligence(client, vname, sprint,
+                               transcript_text, feedback_text,
+                               sprint_plan_text, journey_text):
+    """
+    Extract structured call intelligence records from all document sources.
+
+    Per-call record extracts:
+      1. venture_name       — from document context
+      2. expert_name        — mentor / advisor who ran the session
+      3. discussion_topics  — what was discussed during the call
+      4. venture_feedback   — rating + qualitative feedback from venture on the call
+      5. sprint_gaps        — gaps currently being worked on (from sprint plan + journey doc)
+      6. new_gaps           — additional gaps identified from the call not yet in sprint
+
+    One transcript file can produce MULTIPLE call records.
+    Sources used:
+      - Transcript files → fields 2, 3, 6
+      - Feedback file    → field 4 (rating + comments)
+      - Sprint Plan + Growth Journey → field 5 (current sprint gaps)
+
+    Returns list of call record dicts.
+    """
+
+    # ── Step 1: Extract current sprint gaps from Sprint Plan + Journey doc ──
+    # This is done ONCE per venture, not per call chunk.
+    sprint_gaps_context = ""
+    if sprint_plan_text or journey_text:
+        gap_sources = []
+        if sprint_plan_text:
+            gap_sources.append(f"=== SPRINT PLAN ===\n{sprint_plan_text}")
+        if journey_text:
+            gap_sources.append(f"=== GROWTH JOURNEY DOCUMENT ===\n{journey_text}")
+        gap_combined = "\n\n".join(gap_sources)
+
+        GAP_PROMPT = f"""Venture: {vname} | Sprint Type: {sprint}
+
+From the Sprint Plan and/or Growth Journey Document below, extract:
+1. The specific gaps or challenges the venture is currently working on in this sprint
+2. The key objectives or milestones set for this sprint period
+
+Return ONLY a JSON object:
+{{
+  "current_sprint_gaps": [
+    "Gap 1 description — concise, specific",
+    "Gap 2 description"
+  ],
+  "sprint_objectives": [
+    "Objective 1",
+    "Objective 2"
+  ]
+}}
+
+Return empty arrays if nothing found. No markdown fences.
+
+--- DOCUMENTS ---
+{gap_combined[:60000]}"""
+
+        try:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=800,
+                messages=[{"role": "user", "content": GAP_PROMPT}]
+            )
+            raw = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
+            s = raw.find("{"); e = raw.rfind("}") + 1
+            if s != -1 and e > 0:
+                parsed = json.loads(raw[s:e])
+                gaps   = parsed.get("current_sprint_gaps", [])
+                objs   = parsed.get("sprint_objectives", [])
+                parts  = []
+                if gaps: parts.append("Current Sprint Gaps: " + "; ".join(gaps))
+                if objs: parts.append("Sprint Objectives: "  + "; ".join(objs))
+                sprint_gaps_context = " | ".join(parts)
+        except Exception:
+            sprint_gaps_context = "Not Available"
+
+    if not sprint_gaps_context:
+        sprint_gaps_context = "Not Available"
+
+    # ── Step 2: Extract venture feedback summary from feedback file ──
+    # Pulled out separately so it can be attached to each call record.
+    feedback_summary = "Not Available"
+    feedback_rating  = None
+    if feedback_text and len(feedback_text.strip()) > 50:
+        FB_PROMPT = f"""Venture: {vname}
+
+From the feedback file below, extract the venture's feedback on their mentoring/advisory sessions.
+
+Return ONLY a JSON object:
+{{
+  "overall_rating": <number 1-5 or null>,
+  "feedback_summary": "concise summary of what the venture said about the sessions",
+  "specific_comments": ["comment 1", "comment 2"],
+  "usefulness_rating": "how useful they found the sessions",
+  "areas_for_improvement": "any suggestions or complaints"
+}}
+
+No markdown. Return null for any field not found.
+
+--- FEEDBACK FILE ---
+{feedback_text[:40000]}"""
+
+        try:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                messages=[{"role": "user", "content": FB_PROMPT}]
+            )
+            raw = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
+            s = raw.find("{"); e = raw.rfind("}") + 1
+            if s != -1 and e > 0:
+                parsed = json.loads(raw[s:e])
+                feedback_rating  = parsed.get("overall_rating")
+                parts = []
+                if parsed.get("feedback_summary") and parsed["feedback_summary"] != "null":
+                    parts.append(parsed["feedback_summary"])
+                if parsed.get("specific_comments"):
+                    parts.append("Comments: " + "; ".join(
+                        c for c in parsed["specific_comments"] if c and c != "null"
+                    ))
+                if parsed.get("areas_for_improvement") and parsed["areas_for_improvement"] != "null":
+                    parts.append("Improvement: " + parsed["areas_for_improvement"])
+                feedback_summary = " | ".join(parts) if parts else "Not Available"
+        except Exception:
+            feedback_summary = "Not Available"
+
+    # ── Step 3: Extract call records from transcript ──
+    # One transcript chunk can contain multiple sessions.
+    if not transcript_text or len(transcript_text.strip()) < 50:
+        # No transcript — return a single skeleton record with what we have
+        return [{
+            "venture_name":      vname,
+            "expert_name":       "Not Available",
+            "discussion_topics": "Not Available",
+            "venture_feedback":  feedback_summary,
+            "venture_rating":    feedback_rating,
+            "sprint_gaps":       sprint_gaps_context,
+            "new_gaps":          "Not Available",
+            "session_date":      "Not Available",
+            "sources_used":      ["Feedback", "Sprint Plan", "Journey Doc"],
+        }]
+
+    chunks = chunk_text(transcript_text)
+    all_records = []
+    seen_keys   = set()
+
+    CALL_PROMPT = """Venture: {vname} | Sprint: {sprint} | Chunk {n}/{total}
+
+Extract ALL individual call/session records from the transcript below.
+One transcript may contain multiple sessions — identify each separately.
+
+For EACH session found, extract:
+1. expert_name      — name of the mentor, advisor, or expert on the call
+2. session_date     — date of the call (any format found, "Not Available" if missing)
+3. discussion_topics— what was discussed: key topics, questions raised, advice given
+                      (be specific — 3-5 bullet points worth of content in one string)
+4. new_gaps_identified — gaps, challenges, or opportunities identified DURING THIS CALL
+                         that are NOT already part of the current sprint plan.
+                         These are NEW gaps that could be picked up in future sprints.
+                         Focus on: capability gaps, market gaps, resource gaps, skill gaps.
+                         Write "None identified" if nothing new emerged.
+
+Return ONLY a JSON array — one object per session:
+[
+  {{
+    "expert_name": "Name or Not Available",
+    "session_date": "date or Not Available",
+    "discussion_topics": "detailed description of what was discussed",
+    "new_gaps_identified": "description of new gaps found, or None identified"
+  }}
+]
+
+Return [] if no sessions found in this chunk. No markdown fences.
+
+KNOWN SPRINT GAPS (already being worked on — do NOT repeat these as new gaps):
+{sprint_gaps}
+
+--- TRANSCRIPT (Chunk {n}/{total}) ---
+{text}"""
+
+    for i, chunk in enumerate(chunks):
+        try:
+            resp = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2000,
+                system=[{
+                    "type": "text",
+                    "text": (
+                        "You are extracting structured call records from venture transcripts. "
+                        "Return only valid JSON arrays. Never invent data."
+                    ),
+                    "cache_control": {"type": "ephemeral"}
+                }],
+                messages=[{"role": "user", "content": CALL_PROMPT.format(
+                    vname=vname, sprint=sprint,
+                    n=i+1, total=len(chunks),
+                    sprint_gaps=sprint_gaps_context,
+                    text=chunk
+                )}]
+            )
+            raw = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
+            s = raw.find("["); e = raw.rfind("]") + 1
+            if s == -1 or e == 0:
+                continue
+            sessions = json.loads(raw[s:e])
+            if not isinstance(sessions, list):
+                continue
+
+            for sess in sessions:
+                expert = sess.get("expert_name", "Not Available")
+                date   = sess.get("session_date", "Not Available")
+                dedup_key = f"{expert.lower().strip()}_{date}"
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+
+                all_records.append({
+                    "venture_name":      vname,
+                    "expert_name":       expert,
+                    "session_date":      date,
+                    "discussion_topics": sess.get("discussion_topics", "Not Available"),
+                    "venture_feedback":  feedback_summary,
+                    "venture_rating":    feedback_rating,
+                    "sprint_gaps":       sprint_gaps_context,
+                    "new_gaps":          sess.get("new_gaps_identified", "Not Available"),
+                    "sources_used":      ["Transcript", "Feedback", "Sprint Plan", "Journey Doc"],
+                })
+
+        except Exception:
+            continue
+
+    # If transcript had content but nothing parsed, return a single record
+    if not all_records:
+        all_records.append({
+            "venture_name":      vname,
+            "expert_name":       "Not Available",
+            "session_date":      "Not Available",
+            "discussion_topics": "Could not parse session data from transcript",
+            "venture_feedback":  feedback_summary,
+            "venture_rating":    feedback_rating,
+            "sprint_gaps":       sprint_gaps_context,
+            "new_gaps":          "Not Available",
+            "sources_used":      ["Transcript", "Feedback", "Sprint Plan", "Journey Doc"],
+        })
+
+    return all_records

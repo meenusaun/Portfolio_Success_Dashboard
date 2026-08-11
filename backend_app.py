@@ -128,7 +128,7 @@ with st.sidebar:
     api_key = ENV_API_KEY or st.text_input("Anthropic API Key", type="password")
     st.markdown("---")
     st.markdown("**📁 Repository paths:**")
-    st.code(f"Signals:\n{SIGNALS_REPO_PATH}\n\nFeedback:\n{FEEDBACK_REPO_PATH}\n\nCall Intelligence:\n{CALL_INTEL_REPO_PATH}", language="text")
+    st.code(f"Signals:\n{SIGNALS_REPO_PATH}\n\nFeedback:\n{FEEDBACK_REPO_PATH}", language="text")
     st.markdown("---")
     st.caption("NEN Accelerate · Backend\nResources Network Team")
 
@@ -1482,89 +1482,60 @@ with step4_tab:
 with step5_tab:
     st.markdown("### 📞 Generate Call Intelligence Repository")
     st.caption(
-        "Reads signals already extracted in Step 1 → Identifies investment readiness signals → "
-        "Cross-references existing docs to detect capability gaps → "
-        "Saves to `call_intelligence_repository.json`"
+        "Reads Transcript + Feedback files per venture, plus Sprint Plan + Journey Doc for sprint context. "
+        "Extracts per-call records: expert name, topics, venture feedback/rating, "
+        "current sprint gaps, and new gaps identified. "
+        "Saves to `call_intelligence_repository.json`."
     )
 
     if not client:
         st.error("❌ Anthropic API key required."); st.stop()
 
-    CI_RESULTS_KEY = "ci_repo_results"
-    if CI_RESULTS_KEY not in st.session_state:
-        st.session_state[CI_RESULTS_KEY] = {}
+    CI_KEY = "ci_repo_results"
+    if CI_KEY not in st.session_state:
+        st.session_state[CI_KEY] = {}
+    ci_results = st.session_state[CI_KEY]
+    done_ci    = sum(1 for v in ci_results.values() if v.get("status") == "done")
 
-    ci_results = st.session_state[CI_RESULTS_KEY]
-    done_ci = sum(1 for v in ci_results.values() if v.get("status") == "done")
-
-    # ── Requires Step 1 signals to be present ─────────
-    sig_results_ci = st.session_state.get(SIG_RESULTS_KEY, {})
-    sig_done_count = sum(1 for v in sig_results_ci.values() if v.get("status") == "done")
-
-    if sig_done_count == 0:
-        st.warning(
-            "⚠️ No signals found. Complete Step 1 (Signals Repository) first — "
-            "Call Intelligence reads investment signals from Step 1 results."
-        )
-        # Allow upload of existing signals repo as fallback
-        st.markdown("**Or upload an existing signals_repository.json:**")
-        ci_sig_upload = st.file_uploader(
-            "signals_repository.json", type=["json"], key="ci_sig_upload"
-        )
-        if ci_sig_upload:
-            try:
-                existing_sig = json.loads(ci_sig_upload.read().decode("utf-8"))
-                # Reconstruct sig_results from uploaded repo
-                for vn, vdata in existing_sig.get("venture_summary", {}).items():
-                    sig_results_ci[vn] = {
-                        "status":  "done",
-                        "signals": vdata.get("signals", {"momentum": [], "investment": []}),
-                        "hub":     vdata.get("hub", "—"),
-                        "sprint":  vdata.get("sprint", "—"),
-                    }
-                st.session_state[SIG_RESULTS_KEY] = sig_results_ci
-                sig_done_count = len(sig_results_ci)
-                st.success(f"✅ Loaded {sig_done_count} ventures from uploaded signals repository")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Could not read file: {e}")
+    # ── Requires Common Docs pre-load (same as Step 1) ──
+    if "common_text_sig" not in st.session_state:
+        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first.")
         st.stop()
 
-    st.info(f"✅ {sig_done_count} ventures with signals available from Step 1")
+    common_text_ci = st.session_state["common_text_sig"]
 
-    # ── Upload existing CI repo to skip already-done ventures ──
-    st.markdown("---")
+    # ── Upload existing repo to skip already-done ventures ──
     st.markdown("**⚡ Skip already-processed ventures**")
-    ci_existing_upload = st.file_uploader(
-        "Upload existing call_intelligence_repository.json to skip already-processed ventures",
+    ci_upload = st.file_uploader(
+        "Upload existing call_intelligence_repository.json",
         type=["json"], key="ci_existing_upload"
     )
-    if ci_existing_upload and "ci_already_done" not in st.session_state:
+    if ci_upload and "ci_preloaded" not in st.session_state:
         try:
-            existing_ci = json.loads(ci_existing_upload.read().decode("utf-8"))
+            existing_ci = json.loads(ci_upload.read().decode("utf-8"))
             for vn, vdata in existing_ci.get("ventures", {}).items():
                 if vn not in ci_results:
                     ci_results[vn] = {"status": "done", **vdata}
-            st.session_state[CI_RESULTS_KEY] = ci_results
-            st.session_state["ci_already_done"] = True
-            already_ci = sum(1 for v in ci_results.values() if v.get("status") == "done")
-            st.success(f"✅ {already_ci} ventures pre-loaded — will be skipped")
+            st.session_state[CI_KEY] = ci_results
+            st.session_state["ci_preloaded"] = True
+            n_pre = sum(1 for v in ci_results.values() if v.get("status") == "done")
+            st.success(f"✅ {n_pre} ventures pre-loaded from existing file — will be skipped")
             st.rerun()
         except Exception as e:
             st.error(f"Could not read file: {e}")
 
     # ── Controls ──────────────────────────────────────
     st.markdown("---")
-    ci_ctrl1, ci_ctrl2, ci_ctrl3 = st.columns([2, 1, 1])
-    with ci_ctrl1:
+    cc1, cc2, cc3 = st.columns([2, 1, 1])
+    with cc1:
         ci_venture_filter = st.multiselect(
             "Ventures to process (leave empty = all)",
-            options=ventures_list, key="ci_filter"
+            options=ventures_list, key="ci_v_filter"
         )
-    with ci_ctrl2:
+    with cc2:
         ci_batch_size = st.selectbox("Batch size", [5, 10, 15, 20],
-                                      index=1, key="ci_batch_size")
-    with ci_ctrl3:
+                                      index=1, key="ci_batch_sz")
+    with cc3:
         st.markdown("<br>", unsafe_allow_html=True)
         run_all_ci = st.button("▶ Generate All", key="run_all_ci",
                                 use_container_width=True)
@@ -1574,63 +1545,6 @@ with step5_tab:
                   for i in range(0, len(ci_target), ci_batch_size)]
     st.caption(f"{len(ci_target)} ventures · {len(ci_batches)} batches of {ci_batch_size}")
     st.divider()
-
-    # ── Prompt template (defined once, cached by API) ─
-    CI_SYSTEM_PROMPT = (
-        "You are a portfolio analyst for the NEN Accelerate program. "
-        "Return only valid JSON. No preamble, no markdown fences, no explanation."
-    )
-
-    CI_PROMPT_TEMPLATE = """Venture: {vname} | Hub: {hub} | Sprint: {sprint}
-
-SIGNALS FROM CALL TRANSCRIPTS AND DOCUMENTS:
-
-Sprint Momentum Signals:
-{m_text}
-
-Self Investment Signals:
-{i_text}
-
-TASK — Perform TWO analyses:
-
-ANALYSIS 1 — INVESTMENT READINESS SIGNALS
-Identify signals that indicate this venture is ready to invest further in its growth.
-Focus on: hiring leadership, building a sales team, onboarding distributors, entering new markets,
-acquiring equipment or technology, scaling operations, seeking finance.
-Do NOT repeat signals already listed in Self Investment Signals — only identify NEW readiness signals
-inferred from the combined context.
-
-ANALYSIS 2 — CAPABILITY GAP ASSESSMENT
-For every investment readiness signal you identified, assess whether the venture already has
-the required capability or resource based on ALL signals above.
-- Capability EXISTS in evidence → gap_status: "No Gap"
-- Capability MISSING or only PARTIALLY present → gap_status: "Gap"
-
-GAP CATEGORIES (use exactly): HR, Distribution, Finance, Legal/Compliance, Technology, Operations, GTM/Sales, Other
-
-Return ONLY valid JSON:
-{{
-  "investment_readiness_signals": [
-    {{
-      "signal": "brief title",
-      "evidence": "paraphrase from documents",
-      "category": "HR|Distribution|Finance|Legal/Compliance|Technology|Operations|GTM/Sales|Other",
-      "readiness_level": "High|Medium|Low"
-    }}
-  ],
-  "capability_gaps": [
-    {{
-      "signal": "investment readiness signal this relates to",
-      "category": "HR|Distribution|Finance|Legal/Compliance|Technology|Operations|GTM/Sales|Other",
-      "gap_status": "Gap|No Gap",
-      "gap_description": "what is missing or what exists",
-      "evidence": "supporting evidence"
-    }}
-  ],
-  "summary": "2-3 sentence overall assessment of investment readiness and key gaps"
-}}
-
-If no readiness signals found, return empty arrays and summary: "No investment readiness signals found." """
 
     # ── Batch processing ──────────────────────────────
     for bi, batch in enumerate(ci_batches):
@@ -1645,86 +1559,78 @@ If no readiness signals found, return empty arrays and summary: "No investment r
                 cs = cr.get("status", "pending")
                 ic = {"done": "✅", "error": "❌"}.get(cs, "⬜")
                 if cs == "done":
-                    n_sig  = len(cr.get("investment_readiness_signals", []))
-                    n_gap  = sum(1 for g in cr.get("capability_gaps", [])
-                                 if g.get("gap_status") == "Gap")
-                    st.caption(f"{ic} {vn}  ·  {n_sig} readiness signals  ·  {n_gap} gap(s)")
+                    n_calls = len(cr.get("calls", []))
+                    n_new   = sum(1 for c in cr.get("calls", [])
+                                  if c.get("new_gaps", "Not Available") not in
+                                  ["Not Available", "None identified", ""])
+                    st.caption(f"{ic} {vn}  ·  {n_calls} call record(s)  ·  {n_new} with new gaps")
                 elif cs == "error":
                     st.caption(f"{ic} {vn}  ·  Error: {cr.get('_error','')[:80]}")
                 else:
                     st.caption(f"{ic} {vn}  ·  Not processed")
 
             st.markdown("")
-            run_ci_btn   = st.button(f"▶ Run Batch {bi+1}", key=f"run_ci_batch_{bi}")
+            run_ci_btn    = st.button(f"▶ Run Batch {bi+1}", key=f"run_ci_b_{bi}")
             should_run_ci = run_ci_btn or run_all_ci
 
             if should_run_ci:
                 prog_ci = st.progress(0, text=f"Starting batch {bi+1}...")
                 for vi, vname in enumerate(batch):
-                    # Skip if already done
                     if ci_results.get(vname, {}).get("status") == "done":
                         prog_ci.progress((vi+1)/len(batch),
-                                         text=f"⚡ Skipping {vname} (already done)")
+                                         text=f"⚡ Skipping {vname}")
                         continue
 
                     prog_ci.progress(vi/len(batch),
-                                     text=f"Analysing {vname} ({vi+1}/{len(batch)})...")
+                                     text=f"Processing {vname} ({vi+1}/{len(batch)})...")
 
-                    # Get signals from Step 1
-                    vdata  = sig_results_ci.get(vname, {})
-                    sigs   = vdata.get("signals", {"momentum": [], "investment": []})
-                    hub    = vdata.get("hub", cv(get_row(vname), col_hub))
-                    sprint = vdata.get("sprint", cv(get_row(vname), col_sprint))
+                    row    = get_row(vname)
+                    sprint = cv(row, col_sprint)
+                    hub    = cv(row, col_hub)
 
-                    m_text = "\n".join(
-                        f"  [{s.get('category','?')}] {s.get('type','')}: {s.get('evidence','')}"
-                        for s in sigs.get("momentum", [])
-                    ) or "None found"
-                    i_text = "\n".join(
-                        f"  [{s.get('category','?')}] {s.get('type','')}: {s.get('evidence','')}"
-                        for s in sigs.get("investment", [])
-                    ) or "None found"
+                    # ── Load venture files ─────────────────
+                    vfiles      = load_v_files(vname)
+                    fb_text     = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+                    tr_text     = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+                    sprint_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
+                    jour_text   = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
 
-                    prompt = CI_PROMPT_TEMPLATE.format(
-                        vname=vname, hub=hub, sprint=sprint,
-                        m_text=m_text, i_text=i_text
-                    )
+                    # ── Also pull transcript from Common Docs ──
+                    # (Session Transcripts folder already in common_text_ci)
+                    all_transcripts = extract_transcripts_from_common(common_text_ci)
+                    common_tr       = get_transcript_for_venture(vname, all_transcripts)
+                    # Merge venture folder transcript + common docs transcript
+                    combined_tr = "\n\n".join(t for t in [tr_text, common_tr] if t)
 
                     try:
-                        resp = client.messages.create(
-                            model="claude-sonnet-4-5",
-                            max_tokens=1500,
-                            system=[{
-                                "type": "text",
-                                "text": CI_SYSTEM_PROMPT,
-                                "cache_control": {"type": "ephemeral"}
-                            }],
-                            messages=[{"role": "user", "content": prompt}]
+                        from processor import extract_call_intelligence
+                        calls = extract_call_intelligence(
+                            client     = client,
+                            vname      = vname,
+                            sprint     = sprint,
+                            transcript_text  = combined_tr,
+                            feedback_text    = fb_text,
+                            sprint_plan_text = sprint_text,
+                            journey_text     = jour_text,
                         )
-                        raw = resp.content[0].text.strip()
-                        raw = re.sub(r"```json|```", "", raw).strip()
-                        parsed = json.loads(raw)
                         ci_results[vname] = {
                             "status":       "done",
                             "venture_name": vname,
                             "hub":          hub,
                             "sprint":       sprint,
+                            "calls":        calls,
                             "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                            **parsed
                         }
                     except Exception as e:
                         ci_results[vname] = {
                             "status":       "error",
                             "venture_name": vname,
                             "hub":          hub,
-                            "sprint":       sprint,
                             "_error":       str(e),
-                            "investment_readiness_signals": [],
-                            "capability_gaps": [],
-                            "summary":      f"Error: {e}",
+                            "calls":        [],
                             "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
                         }
-                    st.session_state[CI_RESULTS_KEY] = ci_results
+                    st.session_state[CI_KEY] = ci_results
 
                 prog_ci.progress(1.0, text=f"✅ Batch {bi+1} complete!")
                 st.rerun()
@@ -1732,31 +1638,23 @@ If no readiness signals found, return empty arrays and summary: "No investment r
     # ── Download ──────────────────────────────────────
     st.divider()
     done_ci = sum(1 for v in ci_results.values() if v.get("status") == "done")
-    st.markdown(f"**{done_ci}/{len(ventures_list)} ventures processed**")
+    total_calls = sum(len(v.get("calls",[])) for v in ci_results.values()
+                      if v.get("status") == "done")
+    st.markdown(f"**{done_ci}/{len(ventures_list)} ventures processed · {total_calls} call records**")
 
     if done_ci > 0:
-        # Portfolio-level gap summary
-        gap_by_cat = {}
-        for vdata in ci_results.values():
-            if vdata.get("status") != "done": continue
-            for g in vdata.get("capability_gaps", []):
-                if g.get("gap_status") == "Gap":
-                    cat = g.get("category", "Other")
-                    gap_by_cat[cat] = gap_by_cat.get(cat, 0) + 1
-
         ci_payload = {
-            "generated_at":   datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-            "venture_count":  done_ci,
-            "portfolio_gap_summary": gap_by_cat,
+            "generated_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "venture_count": done_ci,
+            "total_calls":   total_calls,
             "ventures": {
                 vn: {k: v for k, v in vr.items() if k != "status"}
                 for vn, vr in ci_results.items()
                 if vr.get("status") == "done"
             }
         }
-
-        ci_dl1, _ = st.columns(2)
-        with ci_dl1:
+        ci_dl, _ = st.columns(2)
+        with ci_dl:
             st.markdown("**💾 Download call_intelligence_repository.json**")
             st.download_button(
                 "⬇️ Download call_intelligence_repository.json",
@@ -1776,17 +1674,17 @@ with status_tab:
 
     sig_results  = st.session_state.get(SIG_RESULTS_KEY, {})
     fb_results   = st.session_state.get(FB_RESULTS_KEY, {})
-    ci_results_s = st.session_state.get(CI_RESULTS_KEY, {})
-    done_s = sum(1 for v in sig_results.values() if v.get("status") == "done")
-    done_f = sum(1 for v in fb_results.values()  if v.get("status") == "done")
-    done_c = sum(1 for v in ci_results_s.values() if v.get("status") == "done")
+    ci_results_s = st.session_state.get(CI_KEY, {})
+    done_s  = sum(1 for v in sig_results.values()  if v.get("status") == "done")
+    done_f  = sum(1 for v in fb_results.values()   if v.get("status") == "done")
+    done_ci = sum(1 for v in ci_results_s.values() if v.get("status") == "done")
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total Ventures",       len(ventures_list))
     m2.metric("Signals Processed",    done_s)
     m3.metric("Feedback Processed",   done_f)
-    m4.metric("Call Intel Processed", done_c)
-    m5.metric("All 3 Complete",
+    m4.metric("Call Intel Processed", done_ci)
+    m5.metric("All Steps Complete",
               sum(1 for v in ventures_list
                   if sig_results.get(v,{}).get("status") == "done"
                   and fb_results.get(v,{}).get("status")  == "done"
@@ -1797,10 +1695,11 @@ with status_tab:
 
     RAG_EMOJI = {"Green":"🟢","Amber":"🟡","Red":"🔴","ZERO":"⚪","Unknown":"⚪"}
 
-    h0,h1,h2,h3,h4,h5 = st.columns([2.5, 1.0, 0.8, 0.8, 0.8, 1.5])
+    h0,h1,h2,h3,h4,h5,h6 = st.columns([2.2, 1.0, 0.7, 0.7, 0.7, 0.7, 1.3])
     h0.markdown("**Venture**"); h1.markdown("**Hub**")
     h2.markdown("**Signals**"); h3.markdown("**RAG**")
-    h4.markdown("**Feedback**"); h5.markdown("**Processed At**")
+    h4.markdown("**Feedback**"); h5.markdown("**Call Intel**")
+    h6.markdown("**Processed At**")
     st.divider()
 
     for vname in ventures_list:
@@ -1808,22 +1707,26 @@ with status_tab:
         hub    = cv(row, col_hub)
         sr     = sig_results.get(vname,{})
         fr     = fb_results.get(vname,{})
+        cr     = ci_results_s.get(vname,{})
         s_done = sr.get("status") == "done"
         f_done = fr.get("status") == "done"
+        c_done = cr.get("status") == "done"
         rag    = sr.get("rag",{}).get("overall_rag","—") if s_done else "—"
         nsig   = (len(sr.get("signals",{}).get("momentum",[])) +
                   len(sr.get("signals",{}).get("investment",[]))) if s_done else "—"
         nsess  = len(fr.get("sessions",[])) if f_done else "—"
+        ncalls = len(cr.get("calls",[])) if c_done else "—"
         proc   = sr.get("processed_at","—")[:16] if s_done else "—"
 
-        c0,c1,c2,c3,c4,c5 = st.columns([2.5,1.0,0.8,0.8,0.8,1.5])
+        c0,c1,c2,c3,c4,c5,c6 = st.columns([2.2,1.0,0.7,0.7,0.7,0.7,1.3])
         c0.markdown(vname)
         c1.markdown(hub)
         c2.markdown(f"{'✅' if s_done else '⬜'} {nsig}")
         rag_emoji = RAG_EMOJI.get(rag, "⚪")
         c3.markdown(f"{rag_emoji} {rag}")
         c4.markdown(f"{'✅' if f_done else '⬜'} {nsess}")
-        c5.markdown(f"<small>{proc}</small>", unsafe_allow_html=True)
+        c5.markdown(f"{'✅' if c_done else '⬜'} {ncalls}")
+        c6.markdown(f"<small>{proc}</small>", unsafe_allow_html=True)
 
     st.divider()
     st.markdown("#### 📤 Upload Instructions")
