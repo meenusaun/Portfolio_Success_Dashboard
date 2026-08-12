@@ -31,8 +31,17 @@ ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "nenadmin2026")
 
 SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
-TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Session Transcripts"
+TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Transcripts (Accelerate Mentor Meetings)"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
+
+# All folder name variants to match — covers old and new naming
+TRANSCRIPT_FOLDER_VARIANTS = [
+    "transcripts (accelerate mentor meetings)",
+    "accelerate mentor meetings",
+    "session transcripts",
+    "mentor meetings",
+    "transcripts",
+]
 DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 
 SIGNALS_REPO_PATH  = f"{REPO_FOLDER}/signals_repository.json"
@@ -283,14 +292,17 @@ def load_v_files(vname):
 @st.cache_data(show_spinner=False, ttl=600)
 def load_common_docs_cached(_sp_id, use_sp):
     texts = []
-    def process_file(fname, content_bytes=None):
+    def process_file(fname, content_bytes=None, full_path=None):
         ext = Path(fname).suffix.lower()
         if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
         if "journey_accelerate_portfolio" in fname.lower(): return
         try:
             text = extract_text_bytes(content_bytes, fname)
             if text and len(text) >= 50:
-                texts.append(f"=== FILE: {fname} ===\n{text}")
+                # Store FULL SharePoint path in header so folder-based
+                # filtering (e.g. transcript folder detection) works correctly
+                header_path = full_path if full_path else fname
+                texts.append(f"=== FILE: {header_path} ===\n{text}")
         except: pass
 
     if use_sp and ENV_CLIENT_ID:
@@ -307,7 +319,10 @@ def load_common_docs_cached(_sp_id, use_sp):
                         elif "file" in item:
                             try:
                                 content = sp.download_file(ipath)
-                                process_file(iname, content_bytes=content)
+                                # Pass full ipath so transcript folder is
+                                # detectable from the stored header
+                                process_file(iname, content_bytes=content,
+                                             full_path=ipath)
                             except: pass
                 except: pass
             scan_sp_folder(COMMON_FOLDER)
@@ -357,14 +372,16 @@ def extract_venture_from_common(venture_name, common_text):
 
 def extract_transcripts_from_common(common_text):
     """
-    Parse already-loaded common_text and return only sections
-    that came from files inside the Session Transcripts folder.
+    Parse already-loaded common_text and return sections that are
+    session/meeting transcripts.
 
-    Now uses full SharePoint path stored in FILE header (since Step 0 fix)
-    so any file inside Session Transcripts/ is included regardless of filename.
-    Returns list of {"filename": str, "text": str}.
+    Matches on:
+    1. Folder path containing any TRANSCRIPT_FOLDER_VARIANTS keyword
+    2. Filename containing meeting/call/transcript/mentor/session/minutes
+    3. Content heuristic — looks like a meeting record
+
+    Returns list of {"filename": str, "path": str, "text": str}.
     """
-    TRANSCRIPT_FOLDER_LOWER = "session transcripts"
     results = []
     sections = common_text.split("=== FILE:")
     for section in sections:
@@ -373,13 +390,40 @@ def extract_transcripts_from_common(common_text):
         if header_end == -1: continue
         fpath = section[:header_end].strip()
         text  = section[header_end+3:].strip()
-        # Match by folder path (full path now stored) OR filename keyword fallback
-        in_transcript_folder = TRANSCRIPT_FOLDER_LOWER in fpath.lower()
-        fname_match = ("transcript" in fpath.lower().split("/")[-1] or
-                       "session"    in fpath.lower().split("/")[-1])
-        if (in_transcript_folder or fname_match) and text and len(text) > 50:
+        if not text or len(text) < 50: continue
+
+        fpath_lower = fpath.lower()
+        fname       = fpath.split("/")[-1]
+        fname_lower = fname.lower()
+
+        # Match 1: folder path contains any known transcript folder variant
+        in_transcript_folder = any(
+            v in fpath_lower for v in TRANSCRIPT_FOLDER_VARIANTS
+        )
+
+        # Match 2: filename keywords
+        fname_match = any(kw in fname_lower for kw in [
+            "transcript", "session", "meeting", "mentor",
+            "call", "discussion", "minutes"
+        ])
+
+        # Match 3: content heuristic — looks like a meeting/call record
+        text_sample = text[:1500].lower()
+        content_match = (
+            any(kw in text_sample for kw in [
+                "discussion", "agenda", "attendee", "participants",
+                "call started", "meeting started", "session started",
+                "next steps", "action item", "minutes of", "transcript"
+            ])
+            and any(kw in text_sample for kw in [
+                "founder", "mentor", "expert", "advisor",
+                "venture partner", "sprint partner"
+            ])
+        )
+
+        if in_transcript_folder or fname_match or content_match:
             results.append({
-                "filename": fpath.split("/")[-1],  # just the filename for display
+                "filename": fname,
                 "path":     fpath,
                 "text":     text
             })
@@ -393,14 +437,38 @@ def get_transcript_for_venture(vname, all_transcripts):
     """
     matched = []
     vname_lower = vname.lower()
-    vwords = [w for w in vname_lower.split() if len(w) > 3]
+    # Words longer than 3 chars — skip common words
+    skip = {"and","the","pvt","ltd","llp","inc","for","with","from","that"}
+    vwords = [w for w in vname_lower.split() if len(w) > 3 and w not in skip]
+
     for entry in all_transcripts:
         fname_lower = entry["filename"].lower()
+        fpath_lower = entry.get("path","").lower()
         text_lower  = entry["text"].lower()
-        name_match  = vname_lower in fname_lower or any(w in fname_lower for w in vwords)
-        text_match  = vname_lower in text_lower[:2000]
-        if name_match or text_match:
+
+        # Match 1: venture name in filename or any significant word matches
+        fname_match = (
+            vname_lower in fname_lower
+            or any(w in fname_lower for w in vwords)
+        )
+
+        # Match 2: venture name anywhere in the full SP path
+        # (covers cases where transcript is in a sub-folder named after venture)
+        path_match = (
+            vname_lower in fpath_lower
+            or any(w in fpath_lower for w in vwords)
+        )
+
+        # Match 3: venture name appears in first 3000 chars of the content
+        # (most transcripts mention the venture name in the header/intro)
+        text_match = (
+            vname_lower in text_lower[:3000]
+            or any(w in text_lower[:3000] for w in vwords if len(w) > 5)
+        )
+
+        if fname_match or path_match or text_match:
             matched.append(entry["text"])
+
     return "\n\n".join(matched) if matched else ""
 
 # ── attendance ─────────────────────────────────────────
@@ -1499,7 +1567,49 @@ with step5_tab:
     if "common_text_sig" not in st.session_state:
         st.warning("⚠️ Go to Step 1 and pre-load Common Documents first."); st.stop()
 
-    # ── Upload existing repo to skip already-done ventures ──
+    # ── Transcript diagnostic ─────────────────────────
+    with st.expander("🔍 Diagnostic — which transcript files were found?", expanded=False):
+        st.caption(
+            "Run this before processing to confirm the correct transcript folder "
+            "is being read. If the list is empty or missing ventures, the folder "
+            "name may not match — check the constants at the top of this file."
+        )
+        common_text_diag = st.session_state.get("common_text_sig", "")
+        all_tr_diag = extract_transcripts_from_common(common_text_diag)
+
+        if not all_tr_diag:
+            st.error(
+                f"❌ No transcript files found in common documents.\n\n"
+                f"Expected folder: `{TRANSCRIPT_FOLDER}`\n\n"
+                f"Matching on folder variants: {TRANSCRIPT_FOLDER_VARIANTS}\n\n"
+                f"**Fix:** Check that your SharePoint folder name exactly matches "
+                f"one of the variants above, or update `TRANSCRIPT_FOLDER_VARIANTS` "
+                f"in backend_app.py to include your actual folder name."
+            )
+        else:
+            st.success(f"✅ {len(all_tr_diag)} transcript file(s) found in common documents")
+            st.markdown("**Files found:**")
+            for t in all_tr_diag:
+                st.markdown(
+                    f"- `{t['path']}` — {len(t['text']):,} chars"
+                )
+
+            st.divider()
+            st.markdown("**Venture matching preview** — which ventures get transcripts?")
+            diag_matched, diag_unmatched = [], []
+            for vn in ventures_list:
+                tr = get_transcript_for_venture(vn, all_tr_diag)
+                if tr:
+                    diag_matched.append(f"✅ {vn} — {len(tr):,} chars")
+                else:
+                    diag_unmatched.append(f"⬜ {vn} — no match")
+            for line in diag_matched:
+                st.markdown(line)
+            if diag_unmatched:
+                st.markdown("---")
+                st.caption("Ventures with no transcript match:")
+                for line in diag_unmatched:
+                    st.markdown(line)
     st.markdown("**⚡ Skip already-processed ventures**")
     ci_upload = st.file_uploader(
         "Upload existing call_intelligence_repository.json",
