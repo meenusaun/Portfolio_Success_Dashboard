@@ -128,7 +128,7 @@ with st.sidebar:
     api_key = ENV_API_KEY or st.text_input("Anthropic API Key", type="password")
     st.markdown("---")
     st.markdown("**📁 Repository paths:**")
-    st.code(f"Signals:\n{SIGNALS_REPO_PATH}\n\nFeedback:\n{FEEDBACK_REPO_PATH}", language="text")
+    st.code(f"Signals:\n{SIGNALS_REPO_PATH}\n\nFeedback:\n{FEEDBACK_REPO_PATH}\n\nCall Intel:\n{CALL_INTEL_REPO_PATH}", language="text")
     st.markdown("---")
     st.caption("NEN Accelerate · Backend\nResources Network Team")
 
@@ -1482,10 +1482,10 @@ with step4_tab:
 with step5_tab:
     st.markdown("### 📞 Generate Call Intelligence Repository")
     st.caption(
-        "Reads Transcript + Feedback files per venture, plus Sprint Plan + Journey Doc for sprint context. "
-        "Extracts per-call records: expert name, topics, venture feedback/rating, "
-        "current sprint gaps, and new gaps identified. "
-        "Saves to `call_intelligence_repository.json`."
+        "Reads Transcript + Feedback + Sprint Plan + Journey Doc per venture → "
+        "Extracts 7 structured fields per call: Objective, Discussion Topics, Company Updates, "
+        "VP Guidance, Key Decisions, Action Items, Risks/Challenges → "
+        "Saves to `call_intelligence_repository.json`"
     )
 
     if not client:
@@ -1495,14 +1495,9 @@ with step5_tab:
     if CI_KEY not in st.session_state:
         st.session_state[CI_KEY] = {}
     ci_results = st.session_state[CI_KEY]
-    done_ci    = sum(1 for v in ci_results.values() if v.get("status") == "done")
 
-    # ── Requires Common Docs pre-load (same as Step 1) ──
     if "common_text_sig" not in st.session_state:
-        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first.")
-        st.stop()
-
-    common_text_ci = st.session_state["common_text_sig"]
+        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first."); st.stop()
 
     # ── Upload existing repo to skip already-done ventures ──
     st.markdown("**⚡ Skip already-processed ventures**")
@@ -1519,7 +1514,7 @@ with step5_tab:
             st.session_state[CI_KEY] = ci_results
             st.session_state["ci_preloaded"] = True
             n_pre = sum(1 for v in ci_results.values() if v.get("status") == "done")
-            st.success(f"✅ {n_pre} ventures pre-loaded from existing file — will be skipped")
+            st.success(f"✅ {n_pre} ventures pre-loaded — will be skipped")
             st.rerun()
         except Exception as e:
             st.error(f"Could not read file: {e}")
@@ -1546,6 +1541,8 @@ with step5_tab:
     st.caption(f"{len(ci_target)} ventures · {len(ci_batches)} batches of {ci_batch_size}")
     st.divider()
 
+    common_text_ci = st.session_state["common_text_sig"]
+
     # ── Batch processing ──────────────────────────────
     for bi, batch in enumerate(ci_batches):
         batch_done = sum(1 for v in batch if ci_results.get(v, {}).get("status") == "done")
@@ -1560,10 +1557,7 @@ with step5_tab:
                 ic = {"done": "✅", "error": "❌"}.get(cs, "⬜")
                 if cs == "done":
                     n_calls = len(cr.get("calls", []))
-                    n_new   = sum(1 for c in cr.get("calls", [])
-                                  if c.get("new_gaps", "Not Available") not in
-                                  ["Not Available", "None identified", ""])
-                    st.caption(f"{ic} {vn}  ·  {n_calls} call record(s)  ·  {n_new} with new gaps")
+                    st.caption(f"{ic} {vn}  ·  {n_calls} call record(s)")
                 elif cs == "error":
                     st.caption(f"{ic} {vn}  ·  Error: {cr.get('_error','')[:80]}")
                 else:
@@ -1587,45 +1581,44 @@ with step5_tab:
                     row    = get_row(vname)
                     sprint = cv(row, col_sprint)
                     hub    = cv(row, col_hub)
+                    vp     = cv(row, col_vp) if col_vp else "—"
 
-                    # ── Load venture files ─────────────────
+                    # Load venture files
                     vfiles      = load_v_files(vname)
                     fb_text     = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                     tr_text     = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
                     sprint_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
                     jour_text   = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
 
-                    # ── Also pull transcript from Common Docs ──
-                    # (Session Transcripts folder already in common_text_ci)
+                    # Merge transcript from venture folder + Session Transcripts common folder
                     all_transcripts = extract_transcripts_from_common(common_text_ci)
-                    common_tr       = get_transcript_for_venture(vname, all_transcripts)
-                    # Merge venture folder transcript + common docs transcript
+                    common_tr = get_transcript_for_venture(vname, all_transcripts)
                     combined_tr = "\n\n".join(t for t in [tr_text, common_tr] if t)
 
                     try:
                         from processor import extract_call_intelligence
                         calls = extract_call_intelligence(
-                            client     = client,
-                            vname      = vname,
-                            sprint     = sprint,
+                            client           = client,
+                            vname            = vname,
+                            sprint           = sprint,
                             transcript_text  = combined_tr,
                             feedback_text    = fb_text,
                             sprint_plan_text = sprint_text,
                             journey_text     = jour_text,
                         )
                         ci_results[vname] = {
-                            "status":       "done",
-                            "venture_name": vname,
-                            "hub":          hub,
-                            "sprint":       sprint,
-                            "calls":        calls,
-                            "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                            "status":          "done",
+                            "venture_name":    vname,
+                            "hub":             hub,
+                            "venture_partner": vp,
+                            "sprint":          sprint,
+                            "calls":           calls,
+                            "processed_at":    datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
                         }
                     except Exception as e:
                         ci_results[vname] = {
                             "status":       "error",
                             "venture_name": vname,
-                            "hub":          hub,
                             "_error":       str(e),
                             "calls":        [],
                             "processed_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
@@ -1637,8 +1630,8 @@ with step5_tab:
 
     # ── Download ──────────────────────────────────────
     st.divider()
-    done_ci = sum(1 for v in ci_results.values() if v.get("status") == "done")
-    total_calls = sum(len(v.get("calls",[])) for v in ci_results.values()
+    done_ci     = sum(1 for v in ci_results.values() if v.get("status") == "done")
+    total_calls = sum(len(v.get("calls", [])) for v in ci_results.values()
                       if v.get("status") == "done")
     st.markdown(f"**{done_ci}/{len(ventures_list)} ventures processed · {total_calls} call records**")
 
@@ -1695,11 +1688,10 @@ with status_tab:
 
     RAG_EMOJI = {"Green":"🟢","Amber":"🟡","Red":"🔴","ZERO":"⚪","Unknown":"⚪"}
 
-    h0,h1,h2,h3,h4,h5,h6 = st.columns([2.2, 1.0, 0.7, 0.7, 0.7, 0.7, 1.3])
+    h0,h1,h2,h3,h4,h5 = st.columns([2.5, 1.0, 0.8, 0.8, 0.8, 1.5])
     h0.markdown("**Venture**"); h1.markdown("**Hub**")
     h2.markdown("**Signals**"); h3.markdown("**RAG**")
-    h4.markdown("**Feedback**"); h5.markdown("**Call Intel**")
-    h6.markdown("**Processed At**")
+    h4.markdown("**Feedback**"); h5.markdown("**Processed At**")
     st.divider()
 
     for vname in ventures_list:
@@ -1707,33 +1699,28 @@ with status_tab:
         hub    = cv(row, col_hub)
         sr     = sig_results.get(vname,{})
         fr     = fb_results.get(vname,{})
-        cr     = ci_results_s.get(vname,{})
         s_done = sr.get("status") == "done"
         f_done = fr.get("status") == "done"
-        c_done = cr.get("status") == "done"
         rag    = sr.get("rag",{}).get("overall_rag","—") if s_done else "—"
         nsig   = (len(sr.get("signals",{}).get("momentum",[])) +
                   len(sr.get("signals",{}).get("investment",[]))) if s_done else "—"
         nsess  = len(fr.get("sessions",[])) if f_done else "—"
-        ncalls = len(cr.get("calls",[])) if c_done else "—"
         proc   = sr.get("processed_at","—")[:16] if s_done else "—"
 
-        c0,c1,c2,c3,c4,c5,c6 = st.columns([2.2,1.0,0.7,0.7,0.7,0.7,1.3])
+        c0,c1,c2,c3,c4,c5 = st.columns([2.5,1.0,0.8,0.8,0.8,1.5])
         c0.markdown(vname)
         c1.markdown(hub)
         c2.markdown(f"{'✅' if s_done else '⬜'} {nsig}")
         rag_emoji = RAG_EMOJI.get(rag, "⚪")
         c3.markdown(f"{rag_emoji} {rag}")
         c4.markdown(f"{'✅' if f_done else '⬜'} {nsess}")
-        c5.markdown(f"{'✅' if c_done else '⬜'} {ncalls}")
-        c6.markdown(f"<small>{proc}</small>", unsafe_allow_html=True)
+        c5.markdown(f"<small>{proc}</small>", unsafe_allow_html=True)
 
     st.divider()
     st.markdown("#### 📤 Upload Instructions")
     st.info(
-        "After downloading JSON files, upload them manually to SharePoint at:\n\n"
+        "After downloading both JSON files, upload them manually to SharePoint at:\n\n"
         f"**Signals:** `{SIGNALS_REPO_PATH}`\n\n"
         f"**Feedback:** `{FEEDBACK_REPO_PATH}`\n\n"
-        f"**Call Intelligence:** `{CALL_INTEL_REPO_PATH}`\n\n"
         "The frontend app will automatically read them from there."
     )
