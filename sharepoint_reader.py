@@ -133,3 +133,42 @@ class SharePointReader:
         except:
             pass
         return ""
+
+    def get_download_url(self, file_path):
+        """
+        Return a pre-authenticated direct download URL for a SharePoint file.
+        Uses @microsoft.graph.downloadUrl from the item metadata — this is a
+        short-lived (a few hours) direct HTTPS link that works in any browser
+        context including sandboxed iframes (no blob required).
+
+        Returns the URL string, or raises an exception if the file is not found.
+        """
+        path = file_path.strip("/")
+        url  = f"{self.GRAPH_URL}/drives/{self.drive_id}/root:/{path}"
+        resp = requests.get(url, headers=self._headers(), timeout=15)
+        if not resp.ok:
+            raise Exception(
+                f"File not found ({resp.status_code}): {file_path}"
+            )
+        item = resp.json()
+        # @microsoft.graph.downloadUrl is the pre-authenticated direct link
+        dl_url = item.get("@microsoft.graph.downloadUrl")
+        if not dl_url:
+            # Fallback: construct the /content endpoint URL directly
+            # (requires the Bearer token, so the caller must open it
+            #  with Authorization header — less useful for iframe)
+            dl_url = (
+                f"{self.GRAPH_URL}/drives/{self.drive_id}"
+                f"/root:/{path}:/content"
+            )
+        return dl_url
+
+    def get_download_url_safe(self, file_path):
+        """
+        Like get_download_url but returns None instead of raising on error.
+        Use this when the file might not exist (e.g. optional attachments).
+        """
+        try:
+            return self.get_download_url(file_path)
+        except Exception:
+            return None

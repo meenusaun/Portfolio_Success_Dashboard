@@ -519,7 +519,83 @@ def rag_badge(rag):
     emoji = RAG_EMOJI.get(rag, "⚪")
     return f'<span class="{css}">{emoji} {rag}</span>'
 
-def safe_copy(src):
+def render_call_detail_fields(call):
+    """Render the 7 structured call intelligence fields for one call record."""
+    objective = call.get("call_objective", "Not Available")
+    topics    = call.get("discussion_topics", [])
+    updates   = call.get("company_updates", "Not Available")
+    guidance  = call.get("venture_partner_guidance", "Not Available")
+    decisions = call.get("key_decisions", [])
+    actions   = call.get("action_items", [])
+    risks     = call.get("risks_challenges", [])
+
+    def _na(v): return "—" if not v or str(v) in ["Not Available","nan","None",""] else str(v)
+    def _list(items, color="#334155"):
+        if not items: return "<span style='color:#94a3b8'>—</span>"
+        if isinstance(items, str): items = [items]
+        return "".join(
+            f"<li style='margin-bottom:3px;color:{color}'>{i}</li>"
+            for i in items if i
+        )
+
+    cell_l = "padding:10px 13px;border-right:.5px solid #e2e8f0;border-bottom:.5px solid #e2e8f0"
+    cell_r = "padding:10px 13px;border-bottom:.5px solid #e2e8f0"
+    lbl    = "font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;margin-bottom:4px"
+    val    = "font-size:0.82rem;color:#334155"
+
+    st.markdown(
+        "<div style='background:#f8fafc;border:.5px solid #e2e8f0;"
+        "border-radius:8px;overflow:hidden;margin-top:10px'>",
+        unsafe_allow_html=True
+    )
+    r1c1, r1c2 = st.columns(2)
+    with r1c1:
+        st.markdown(
+            f"<div style='{cell_l}'><div style='{lbl}'>🎯 Call objective</div>"
+            f"<div style='{val}'>{_na(objective)}</div></div>",
+            unsafe_allow_html=True
+        )
+    with r1c2:
+        st.markdown(
+            f"<div style='{cell_r}'><div style='{lbl}'>💬 Major discussion points</div>"
+            f"<ul style='margin:0;padding-left:16px;font-size:0.82rem'>{_list(topics)}</ul></div>",
+            unsafe_allow_html=True
+        )
+    r2c1, r2c2 = st.columns(2)
+    with r2c1:
+        st.markdown(
+            f"<div style='{cell_l}'><div style='{lbl}'>🏢 Company updates</div>"
+            f"<div style='{val}'>{_na(updates)}</div></div>",
+            unsafe_allow_html=True
+        )
+    with r2c2:
+        st.markdown(
+            f"<div style='{cell_r}'><div style='{lbl}'>👤 Venture partner guidance</div>"
+            f"<div style='{val}'>{_na(guidance)}</div></div>",
+            unsafe_allow_html=True
+        )
+    r3c1, r3c2 = st.columns(2)
+    with r3c1:
+        st.markdown(
+            f"<div style='{cell_l}'><div style='{lbl}'>✅ Key decisions</div>"
+            f"<ul style='margin:0;padding-left:16px;font-size:0.82rem'>{_list(decisions)}</ul></div>",
+            unsafe_allow_html=True
+        )
+    with r3c2:
+        st.markdown(
+            f"<div style='{cell_r}'><div style='{lbl}'>📋 Action items</div>"
+            f"<ul style='margin:0;padding-left:16px;font-size:0.82rem'>{_list(actions)}</ul></div>",
+            unsafe_allow_html=True
+        )
+    st.markdown(
+        f"<div style='padding:10px 13px;background:#fff5f5'>"
+        f"<div style='{lbl}'>⚠️ Risks / challenges</div>"
+        f"<ul style='margin:0;padding-left:16px;font-size:0.82rem'>{_list(risks,'#991b1b')}</ul></div>",
+        unsafe_allow_html=True
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
     dst = os.path.join(tempfile.gettempdir(), "nen_fe_" + os.path.basename(src))
     shutil.copy2(src, dst); return dst
 
@@ -529,7 +605,95 @@ def find_col(df, patterns):
             if p.lower() in str(c).lower(): return c
     return None
 
-def get_stage_bucket(pct):
+# ── SharePoint direct download link (works in sandboxed iframes) ──────────
+def sp_download_link(file_path, label="⬇️ Download", sp=None, style=""):
+    """
+    Return an HTML anchor that opens a SharePoint file directly in a new tab.
+    Uses @microsoft.graph.downloadUrl — a short-lived pre-authenticated HTTPS
+    link that works in Lovable's sandboxed iframe without any blob API.
+
+    Falls back gracefully if sp_reader is not available or file not found.
+    style: optional extra CSS for the anchor tag.
+    """
+    if not sp:
+        return (
+            f"<span style='color:#94a3b8;font-size:0.82rem'>{label} (no SP connection)</span>"
+        )
+    try:
+        url = sp.get_download_url(file_path)
+        base_style = (
+            "background:#4f46e5;color:#fff;padding:5px 13px;"
+            "border-radius:8px;font-size:0.80rem;text-decoration:none;"
+            "font-weight:500;display:inline-block;margin-top:6px;"
+        )
+        return (
+            f"<a href='{url}' target='_blank' rel='noopener noreferrer' "
+            f"style='{base_style}{style}'>{label}</a>"
+        )
+    except Exception:
+        return (
+            f"<span style='color:#94a3b8;font-size:0.82rem'>"
+            f"{label} (file not found)</span>"
+        )
+
+def sp_download_link_safe(file_path, label="⬇️ Download", sp=None):
+    """Like sp_download_link but never raises — always returns HTML string."""
+    try:
+        return sp_download_link(file_path, label=label, sp=sp)
+    except Exception:
+        return f"<span style='color:#94a3b8;font-size:0.82rem'>{label} (unavailable)</span>"
+
+
+def sp_call_document_link(vname, call_type, call_intel_repo=None,
+                           sp=None, label=None):
+    """
+    Build a SharePoint download link for the source document of a call.
+
+    Strategy:
+    1. Check if call_intel_repo has a stored file_path for this venture/call.
+    2. Fall back to scanning venture folder for a file matching the call type keyword.
+    3. Return HTML anchor or a greyed-out placeholder.
+
+    call_type: "Sprint call" | "Panel call" | "VP call" | "Mid-sprint VP review"
+    """
+    if not sp:
+        return ""
+
+    # Default label based on call type
+    if not label:
+        if call_type in ("Sprint call",):
+            label = "⬇️ Transcript"
+        elif call_type == "Mid-sprint VP review":
+            label = "⬇️ VP report"
+        elif call_type in ("VP call", "Panel call"):
+            label = "⬇️ Call report"
+        else:
+            label = "⬇️ Document"
+
+    # Keyword to match filename
+    keyword_map = {
+        "Sprint call":         "transcript",
+        "Panel call":          "transcript",
+        "VP call":             "transcript",
+        "Mid-sprint VP review":"vp report",
+    }
+    keyword = keyword_map.get(call_type, "transcript")
+
+    # Try venture folder scan
+    try:
+        folder = f"{SP_FOLDER}/{vname}"
+        items  = sp.list_files(folder)
+        for fname in items:
+            if keyword.lower() in fname.lower():
+                return sp_download_link(
+                    f"{folder}/{fname}", label=label, sp=sp
+                )
+    except Exception:
+        pass
+
+    return f"<span style='color:#94a3b8;font-size:0.82rem'>{label} (not found)</span>"
+
+
     try:
         if pct is None or str(pct).strip() in ["","nan","None","-"]: return "Unknown"
         p = float(str(pct).replace("%","").replace(",","").strip())
@@ -2288,6 +2452,12 @@ with tab_ventures:
             with tab_sessions:
                 st.markdown("<br>", unsafe_allow_html=True)
 
+                # Call intelligence records for this venture (7-field structured data)
+                ci_calls = []
+                if call_intel_repo:
+                    ci_v = call_intel_repo.get("ventures", {}).get(vname, {})
+                    ci_calls = ci_v.get("calls", [])
+
                 # All sessions from all sources — unified lookup
                 tracker_sessions     = venture_tracker_sessions.get(vname, [])
                 transcript_sessions  = sessions  # Claude-extracted from transcripts
@@ -2295,13 +2465,96 @@ with tab_ventures:
 
                 total_sess = len(all_venture_sessions)
 
-                if total_sess == 0:
+                # ── Call Intelligence section (7-field structured records) ──
+                if ci_calls:
+                    st.markdown(
+                        f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:4px'>"
+                        f"📞 Call Intelligence — {len(ci_calls)} call record(s)</div>",
+                        unsafe_allow_html=True
+                    )
+                    st.caption("Structured call data: objective, discussion topics, company updates, VP guidance, key decisions, action items, risks")
+                    st.divider()
+
+                    CALL_TYPE_COLORS = {
+                        "Sprint call":         "#5b21b6",
+                        "Panel call":          "#854f0b",
+                        "VP call":             "#854f0b",
+                        "Mid-sprint VP review":"#854f0b",
+                    }
+
+                    for ci, call in enumerate(ci_calls):
+                        expert     = call.get("expert_name", "Not Available")
+                        expert_role= call.get("expert_role", "Expert")
+                        date       = call.get("session_date", "Not Available")
+                        call_type  = call.get("call_type", "Sprint call")
+                        fb_rating  = call.get("venture_feedback_rating")
+                        fb_text    = call.get("venture_feedback_text", "Not Available")
+                        type_color = CALL_TYPE_COLORS.get(call_type, "#334155")
+
+                        rating_str = f"⭐ {fb_rating}" if fb_rating else ""
+
+                        st.markdown(
+                            f"<div style='background:#fff;border:.5px solid #e2e8f0;"
+                            f"border-radius:10px;padding:12px 16px;margin-bottom:4px'>"
+                            f"<div style='display:flex;justify-content:space-between;"
+                            f"align-items:center;flex-wrap:wrap;gap:6px'>"
+                            f"<div>"
+                            f"<span style='font-weight:700;font-size:0.92rem'>Call {ci+1}: {expert}</span>"
+                            f"<span style='background:#ede9fe;color:#5b21b6;padding:2px 8px;"
+                            f"border-radius:8px;font-size:0.72rem;margin-left:8px'>{expert_role}</span>"
+                            f"</div>"
+                            f"<div style='display:flex;gap:6px;align-items:center;flex-wrap:wrap'>"
+                            f"<span style='background:#f1f5f9;color:#475569;padding:2px 8px;"
+                            f"border-radius:8px;font-size:0.75rem'>📅 {date}</span>"
+                            f"<span style='background:{type_color}22;color:{type_color};"
+                            f"padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:600'>"
+                            f"{call_type}</span>"
+                            + (f"<span style='font-weight:700;color:#16a34a'>{rating_str}</span>"
+                               if rating_str else "")
+                            + f"</div></div></div>",
+                            unsafe_allow_html=True
+                        )
+
+                        # 7-field detail panel
+                        render_call_detail_fields(call)
+
+                        # Venture feedback
+                        if fb_text and fb_text not in ["Not Available", "—"]:
+                            st.markdown(
+                                f"<div style='background:#f0fdf4;border:.5px solid #bbf7d0;"
+                                f"border-radius:8px;padding:8px 12px;margin-top:6px;"
+                                f"font-size:0.82rem;color:#166534'>"
+                                f"<span style='font-weight:600'>Venture feedback:</span> {fb_text}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                        # SharePoint document download link
+                        dl_html = sp_call_document_link(
+                            vname, call_type, sp=sp_reader
+                        )
+                        if dl_html:
+                            st.markdown(dl_html, unsafe_allow_html=True)
+
+                        if ci < len(ci_calls) - 1:
+                            st.markdown("<br>", unsafe_allow_html=True)
+
+                    if tracker_sessions or transcript_sessions:
+                        st.divider()
+                        st.markdown(
+                            "<div style='font-size:0.78rem;color:#94a3b8;margin-bottom:12px'>"
+                            "Additional session data from tracker and transcript files below</div>",
+                            unsafe_allow_html=True
+                        )
+
+                elif total_sess == 0:
                     st.info("No session data found for this venture.")
                     st.caption(
                         "Run Backend → Step 2 Section A (upload tracker files) and "
-                        "Section B (transcript extraction) to populate this tab."
+                        "Section B (transcript extraction) to populate this tab. "
+                        "For 7-field call intelligence, also run Backend → Step 5."
                     )
-                else:
+
+                if total_sess > 0:
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Sessions from Tracker",     len(tracker_sessions))
                     m2.metric("Sessions from Transcripts", len(transcript_sessions))
@@ -2392,7 +2645,6 @@ with tab_ventures:
                                 unsafe_allow_html=True
                             )
 
-                        # Mentor's view (only from tracker)
                         if m_eng and m_eng != "Not Available":
                             st.markdown(
                                 f"<div style='font-size:0.78rem;color:#64748b;margin-top:8px'>"
@@ -2710,6 +2962,10 @@ with tab_mentors:
                         <td style='padding:8px 12px;text-align:center'>{rating_str}</td>
                         <td style='padding:8px 12px;text-align:center'>{followup_str}</td>
                         <td style='padding:8px 12px;max-width:140px'>{mentor_cell}</td>
+                        <td style='padding:8px 12px;white-space:nowrap'>{
+                            sp_call_document_link(venture, stype, sp=sp_reader,
+                                label="⬇️ Doc")
+                        }</td>
                     </tr>"""
 
                 st.markdown(f"""
@@ -2726,6 +2982,7 @@ with tab_mentors:
                         <th style='padding:8px 12px;text-align:center;color:#475569;font-weight:600'>Rating</th>
                         <th style='padding:8px 12px;text-align:center;color:#475569;font-weight:600'>Follow-up</th>
                         <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Mentor View</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Document</th>
                     </tr></thead>
                     <tbody>{rows_html}</tbody>
                 </table></div>""", unsafe_allow_html=True)
@@ -3019,7 +3276,8 @@ with tab_value:
 with tab_call_intel:
     st.title("📞 Call Intelligence")
     st.caption(
-        "Investment readiness signals and capability gap analysis — "
+        "Per-call structured records — objective, discussion topics, company updates, "
+        "VP guidance, key decisions, action items, risks/challenges · "
         "generated in Backend Step 5 · read from call_intelligence_repository.json"
     )
     st.divider()
@@ -3034,163 +3292,232 @@ with tab_call_intel:
     else:
         ci_ventures = call_intel_repo.get("ventures", {})
         gen_at      = call_intel_repo.get("generated_at", "—")
-        portfolio_gaps = call_intel_repo.get("portfolio_gap_summary", {})
+        total_calls = call_intel_repo.get("total_calls", 0)
 
-        st.caption(f"Generated: {gen_at} · {len(ci_ventures)} ventures analysed")
-
-        # ── Filters ───────────────────────────────────
-        ci_f1, ci_f2 = st.columns([2, 2])
-        ci_hub    = ci_f1.selectbox("Filter by Hub", ["All"] + sorted(set(
-            v.get("hub","—") for v in ci_ventures.values() if v.get("hub","—") != "—"
-        )), key="ci_hub")
-        ci_search = ci_f2.text_input("🔍 Search Venture", key="ci_search")
-
-        filtered_ci = {
-            vn: vdata for vn, vdata in ci_ventures.items()
-            if (ci_hub == "All" or vdata.get("hub") == ci_hub)
-            and (not ci_search or ci_search.lower() in vn.lower())
-        }
-
-        # ── Portfolio summary metrics ──────────────────
-        total_signals = sum(
-            len(v.get("investment_readiness_signals", [])) for v in filtered_ci.values()
-        )
-        total_gaps = sum(
-            sum(1 for g in v.get("capability_gaps", []) if g.get("gap_status") == "Gap")
-            for v in filtered_ci.values()
-        )
-        ventures_with_gaps = sum(
-            1 for v in filtered_ci.values()
-            if any(g.get("gap_status") == "Gap" for g in v.get("capability_gaps", []))
+        st.caption(
+            f"Generated: {gen_at} · {len(ci_ventures)} ventures · {total_calls} call records"
         )
 
-        pm1, pm2, pm3, pm4 = st.columns(4)
-        pm1.metric("Ventures Analysed",           len(filtered_ci))
-        pm2.metric("Investment Readiness Signals", total_signals)
-        pm3.metric("Capability Gaps Identified",   total_gaps)
-        pm4.metric("Ventures with Gaps",           ventures_with_gaps)
+        # ── Filters ──────────────────────────────────
+        cif1, cif2, cif3, cif4 = st.columns([2, 1.5, 1.5, 1.5])
+        with cif1:
+            ci_search = st.text_input("🔍 Search venture", key="ci_search_v2")
+        with cif2:
+            ci_hub_f = st.selectbox("Hub", ["All"] + sorted(set(
+                v.get("hub", "—") for v in ci_ventures.values() if v.get("hub","—") != "—"
+            )), key="ci_hub_f")
+        with cif3:
+            ci_call_type_f = st.selectbox("Call type", [
+                "All", "Sprint call", "Panel call", "VP call", "Mid-sprint VP review"
+            ], key="ci_call_type_f")
+        with cif4:
+            ci_sprint_f = st.selectbox("Sprint", ["All"] + sorted(set(
+                v.get("sprint", "—") for v in ci_ventures.values() if v.get("sprint","—") not in ["—",""]
+            )), key="ci_sprint_f")
+
+        # ── Portfolio KPIs ────────────────────────────
+        all_ci_calls = []
+        for vn, vd in ci_ventures.items():
+            for c in vd.get("calls", []):
+                c["_venture_name"] = vn
+                c["_hub"]          = vd.get("hub","—")
+                c["_sprint"]       = vd.get("sprint","—")
+                all_ci_calls.append(c)
+
+        # Apply filters
+        def ci_call_passes(c):
+            vn = c.get("_venture_name","")
+            if ci_search and ci_search.lower() not in vn.lower(): return False
+            if ci_hub_f != "All" and c.get("_hub","") != ci_hub_f: return False
+            if ci_call_type_f != "All" and c.get("call_type","") != ci_call_type_f: return False
+            if ci_sprint_f != "All" and c.get("_sprint","") != ci_sprint_f: return False
+            return True
+
+        filtered_calls = [c for c in all_ci_calls if ci_call_passes(c)]
+
+        # Gap analysis from risks_challenges across all calls
+        in_sprint_count = len([c for c in filtered_calls
+                                if c.get("sprint_gaps_context","Not Available") != "Not Available"])
+        new_gap_count   = sum(
+            len(c.get("risks_challenges",[])) for c in filtered_calls
+        )
+        ventures_with_risks = len(set(
+            c["_venture_name"] for c in filtered_calls
+            if c.get("risks_challenges")
+        ))
+        rated_calls = [c for c in filtered_calls
+                       if c.get("venture_feedback_rating") not in [None, "None"]]
+        avg_rating = (
+            round(sum(float(c["venture_feedback_rating"]) for c in rated_calls) / len(rated_calls), 1)
+            if rated_calls else None
+        )
+
+        pm1, pm2, pm3, pm4, pm5, pm6 = st.columns(6)
+        pm1.metric("Ventures analysed",      len(ci_ventures))
+        pm2.metric("Call records",           len(filtered_calls))
+        pm3.metric("Risks identified",       new_gap_count)
+        pm4.metric("Ventures with risks",    ventures_with_risks)
+        pm5.metric("Avg founder rating",
+                   f"{avg_rating}/5" if avg_rating else "—")
+        pm6.metric("Calls with sprint gaps", in_sprint_count)
 
         st.divider()
 
-        # ── Gap by category bar chart ──────────────────
-        gap_by_cat = {}
-        for vdata in filtered_ci.values():
-            for g in vdata.get("capability_gaps", []):
-                if g.get("gap_status") == "Gap":
-                    cat = g.get("category", "Other")
-                    gap_by_cat[cat] = gap_by_cat.get(cat, 0) + 1
+        # ── Summary: Call types breakdown ─────────────
+        type_counts = {}
+        for c in filtered_calls:
+            ct = c.get("call_type","Other")
+            type_counts[ct] = type_counts.get(ct, 0) + 1
 
-        if gap_by_cat:
-            st.markdown("### ⚠️ Gaps by Category (Portfolio View)")
-            max_gap = max(gap_by_cat.values()) or 1
-            gc_cols = st.columns(2)
-            for idx, (cat, count) in enumerate(
-                sorted(gap_by_cat.items(), key=lambda x: -x[1])
-            ):
-                pct = round(count / max_gap * 100)
-                with gc_cols[idx % 2]:
+        # ── Risk categories from all calls ────────────
+        risk_category_count = {}
+        for c in filtered_calls:
+            for r in c.get("risks_challenges",[]):
+                r_lower = r.lower()
+                if any(w in r_lower for w in ["finance","capital","credit","funding"]):
+                    cat = "Finance"
+                elif any(w in r_lower for w in ["hire","staff","team","hr","recruit"]):
+                    cat = "HR / People"
+                elif any(w in r_lower for w in ["distribution","freight","logistics","delivery"]):
+                    cat = "Distribution"
+                elif any(w in r_lower for w in ["compliance","legal","regulation","license"]):
+                    cat = "Legal / Compliance"
+                elif any(w in r_lower for w in ["tech","software","digital","platform"]):
+                    cat = "Technology"
+                else:
+                    cat = "Operations"
+                risk_category_count[cat] = risk_category_count.get(cat, 0) + 1
+
+        if type_counts or risk_category_count:
+            sum_c1, sum_c2 = st.columns(2)
+            with sum_c1:
+                st.markdown(
+                    "<div class='card-title'>Call type breakdown</div>",
+                    unsafe_allow_html=True
+                )
+                max_tc = max(type_counts.values()) if type_counts else 1
+                TYPE_COLORS = {
+                    "Sprint call": "#5b21b6", "Panel call": "#854f0b",
+                    "VP call": "#854f0b", "Mid-sprint VP review": "#854f0b"
+                }
+                for ct, cnt in sorted(type_counts.items(), key=lambda x: -x[1]):
+                    pct = round(cnt / max_tc * 100)
+                    col = TYPE_COLORS.get(ct, "#334155")
                     st.markdown(
-                        f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:10px'>"
-                        f"<div style='min-width:160px;font-size:0.83rem;font-weight:600;color:#1e293b'>{cat}</div>"
-                        f"<div style='flex:1;background:#e2e8f0;border-radius:4px;height:8px;overflow:hidden'>"
-                        f"<div style='background:#dc2626;height:100%;width:{pct}%'></div></div>"
-                        f"<div style='min-width:60px;font-size:0.8rem;color:#dc2626;font-weight:700'>"
-                        f"{count} gap{'s' if count!=1 else ''}</div>"
+                        f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>"
+                        f"<div style='min-width:160px;font-size:0.83rem;color:#1e293b'>{ct}</div>"
+                        f"<div style='flex:1;background:#e2e8f0;border-radius:4px;height:7px;overflow:hidden'>"
+                        f"<div style='background:{col};height:100%;width:{pct}%'></div></div>"
+                        f"<div style='min-width:28px;font-size:0.8rem;font-weight:700;color:{col}'>{cnt}</div>"
                         f"</div>",
                         unsafe_allow_html=True
                     )
-            st.divider()
+            with sum_c2:
+                if risk_category_count:
+                    st.markdown(
+                        "<div class='card-title'>Risks by category (across all calls)</div>",
+                        unsafe_allow_html=True
+                    )
+                    max_rc = max(risk_category_count.values())
+                    for cat, cnt in sorted(risk_category_count.items(), key=lambda x: -x[1]):
+                        pct = round(cnt / max_rc * 100)
+                        st.markdown(
+                            f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>"
+                            f"<div style='min-width:160px;font-size:0.83rem;color:#1e293b'>{cat}</div>"
+                            f"<div style='flex:1;background:#e2e8f0;border-radius:4px;height:7px;overflow:hidden'>"
+                            f"<div style='background:#dc2626;height:100%;width:{pct}%'></div></div>"
+                            f"<div style='min-width:28px;font-size:0.8rem;font-weight:700;color:#dc2626'>{cnt}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
 
-        # ── Per-venture detail ─────────────────────────
-        st.markdown("### 🏢 Venture-level Detail")
-        st.caption("Sorted by gap count — ventures with no signals are hidden")
+        st.divider()
 
-        sorted_ventures = sorted(
-            filtered_ci.items(),
-            key=lambda x: sum(
-                1 for g in x[1].get("capability_gaps", [])
-                if g.get("gap_status") == "Gap"
-            ),
-            reverse=True
+        # ── Per-venture call records ───────────────────
+        st.markdown(
+            f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
+            f"🏢 Call records by venture — {len(filtered_calls)} calls shown</div>",
+            unsafe_allow_html=True
         )
 
-        for vname, vdata in sorted_ventures:
-            ir_signals  = vdata.get("investment_readiness_signals", [])
-            gaps        = vdata.get("capability_gaps", [])
-            summary     = vdata.get("summary", "")
-            hub_v       = vdata.get("hub", "—")
-            gap_count   = sum(1 for g in gaps if g.get("gap_status") == "Gap")
-            nogap_count = sum(1 for g in gaps if g.get("gap_status") == "No Gap")
+        # Group filtered calls by venture
+        calls_by_venture = {}
+        for c in filtered_calls:
+            vn = c["_venture_name"]
+            calls_by_venture.setdefault(vn, []).append(c)
 
-            if not ir_signals and not gaps:
-                continue
+        CALL_TYPE_COLORS = {
+            "Sprint call": "#5b21b6", "Panel call": "#854f0b",
+            "VP call": "#854f0b", "Mid-sprint VP review": "#854f0b"
+        }
+
+        for vn, v_calls in calls_by_venture.items():
+            hub_str    = v_calls[0].get("_hub","—")
+            sprint_str = v_calls[0].get("_sprint","—")
+            n_risks    = sum(len(c.get("risks_challenges",[])) for c in v_calls)
 
             with st.expander(
-                f"**{vname}** · {hub_v} · {len(ir_signals)} signal(s) · {gap_count} gap(s)"
+                f"**{vn}** · {hub_str} · {sprint_str} · "
+                f"{len(v_calls)} call(s) · {n_risks} risk(s)"
             ):
-                if summary:
+                for ci, call in enumerate(v_calls):
+                    expert      = call.get("expert_name","Not Available")
+                    expert_role = call.get("expert_role","Expert")
+                    date        = call.get("session_date","Not Available")
+                    call_type   = call.get("call_type","Sprint call")
+                    fb_rating   = call.get("venture_feedback_rating")
+                    fb_text     = call.get("venture_feedback_text","Not Available")
+                    type_color  = CALL_TYPE_COLORS.get(call_type, "#334155")
+                    rating_str  = f"⭐ {fb_rating}" if fb_rating else ""
+
+                    # Call header
                     st.markdown(
-                        f"<div style='background:#f8fafc;border-left:3px solid #6366f1;"
-                        f"border-radius:0 8px 8px 0;padding:10px 14px;font-size:0.83rem;"
-                        f"color:#334155;margin-bottom:14px'>{summary}</div>",
+                        f"<div style='background:#fff;border:.5px solid #e2e8f0;"
+                        f"border-radius:10px;padding:10px 14px;margin-bottom:4px;"
+                        f"margin-top:{12 if ci>0 else 0}px'>"
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"align-items:center;flex-wrap:wrap;gap:6px'>"
+                        f"<div>"
+                        f"<span style='font-weight:700;font-size:0.92rem'>"
+                        f"Call {ci+1}: {expert}</span>"
+                        f"<span style='background:#ede9fe;color:#5b21b6;padding:2px 8px;"
+                        f"border-radius:8px;font-size:0.72rem;margin-left:8px'>{expert_role}</span>"
+                        f"</div>"
+                        f"<div style='display:flex;gap:6px;flex-wrap:wrap;align-items:center'>"
+                        f"<span style='background:#f1f5f9;color:#475569;padding:2px 8px;"
+                        f"border-radius:8px;font-size:0.75rem'>📅 {date}</span>"
+                        f"<span style='background:{type_color}22;color:{type_color};"
+                        f"padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:600'>"
+                        f"{call_type}</span>"
+                        + (f"<span style='font-weight:700;color:#16a34a'>{rating_str}</span>"
+                           if rating_str else "")
+                        + "</div></div></div>",
                         unsafe_allow_html=True
                     )
 
-                ci_col1, ci_col2 = st.columns(2)
+                    # 7-field detail
+                    render_call_detail_fields(call)
 
-                with ci_col1:
-                    st.markdown(
-                        f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
-                        f"💡 Investment Readiness Signals ({len(ir_signals)})</div>",
-                        unsafe_allow_html=True
-                    )
-                    for sig in ir_signals:
-                        rl = sig.get("readiness_level", "Medium")
-                        rl_color = {"High":"#16a34a","Medium":"#d97706","Low":"#dc2626"}.get(rl,"#64748b")
+                    # Venture feedback if available
+                    if fb_text and fb_text not in ["Not Available","—"]:
                         st.markdown(
-                            f"<div style='background:#fff;border:1px solid #e2e8f0;"
-                            f"border-radius:8px;padding:10px 12px;margin-bottom:8px'>"
-                            f"<div style='display:flex;justify-content:space-between;align-items:center'>"
-                            f"<span style='font-weight:600;font-size:0.83rem;color:#1e293b'>"
-                            f"{sig.get('signal','')}</span>"
-                            f"<span style='background:{rl_color}22;color:{rl_color};"
-                            f"padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700'>"
-                            f"{rl}</span></div>"
-                            f"<div style='font-size:0.78rem;color:#64748b;margin-top:4px'>"
-                            f"🏷 {sig.get('category','')} &nbsp;·&nbsp; "
-                            f"{sig.get('evidence','')[:150]}</div>"
-                            f"</div>",
+                            f"<div style='background:#f0fdf4;border:.5px solid #bbf7d0;"
+                            f"border-radius:8px;padding:8px 12px;margin-top:6px;"
+                            f"font-size:0.82rem;color:#166534'>"
+                            f"<span style='font-weight:600'>Venture feedback:</span> {fb_text}</div>",
                             unsafe_allow_html=True
                         )
 
-                with ci_col2:
-                    st.markdown(
-                        f"<div style='font-weight:700;font-size:0.95rem;margin-bottom:10px'>"
-                        f"🔍 Capability Gap Assessment ({gap_count} gaps / {nogap_count} covered)</div>",
-                        unsafe_allow_html=True
-                    )
-                    for gap in gaps:
-                        is_gap = gap.get("gap_status") == "Gap"
-                        bg     = "#fee2e2" if is_gap else "#dcfce7"
-                        fg     = "#991b1b" if is_gap else "#166534"
-                        icon   = "⚠️" if is_gap else "✅"
-                        st.markdown(
-                            f"<div style='background:{bg};border-radius:8px;"
-                            f"padding:10px 12px;margin-bottom:8px'>"
-                            f"<div style='display:flex;justify-content:space-between;"
-                            f"align-items:center;margin-bottom:4px'>"
-                            f"<span style='font-weight:600;font-size:0.83rem;color:{fg}'>"
-                            f"{icon} {gap.get('signal','')}</span>"
-                            f"<span style='background:rgba(0,0,0,0.08);color:{fg};"
-                            f"padding:1px 7px;border-radius:8px;font-size:0.72rem'>"
-                            f"{gap.get('category','')}</span></div>"
-                            f"<div style='font-size:0.79rem;color:#334155'>"
-                            f"{gap.get('gap_description','')}</div>"
-                            f"<div style='font-size:0.72rem;color:#64748b;margin-top:3px'>"
-                            f"{gap.get('evidence','')[:120]}</div>"
-                            f"</div>",
-                            unsafe_allow_html=True
-                        )
+                    # SharePoint document download link
+                    dl_html = sp_call_document_link(vn, call_type, sp=sp_reader)
+                    if dl_html:
+                        st.markdown(dl_html, unsafe_allow_html=True)
+
+                    # Sprint gaps context
+                    gaps_ctx = call.get("sprint_gaps_context","")
+                    if gaps_ctx and gaps_ctx not in ["Not Available","—",""]:
+                        with st.expander("🎯 Sprint gaps context (from Sprint Plan + Journey Doc)"):
+                            st.caption(gaps_ctx)
 
 
 # ══════════════════════════════════════════════════════
