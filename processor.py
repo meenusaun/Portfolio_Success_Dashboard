@@ -6,7 +6,36 @@ NO character limitations — full chunking support
 import json, re
 from pathlib import Path
 
-CHUNK_SIZE = 120000  # Claude API hard limit per call
+CHUNK_SIZE      = 100000  # leave headroom for system prompt + output tokens
+SESSION_MARKERS = [       # patterns that mark the start of a new call/session
+    "=== SOURCE:",        # our own file header separator
+    "=== FILE:",          # common docs file header
+    "Session ",           # "Session 1", "Session 2", etc.
+    "Call ",              # "Call 1:", "Call 2:", etc.
+    "Meeting ",           # "Meeting Date:", "Meeting with"
+    "Date:",              # date header in transcript
+    "-----",              # horizontal rule separating sessions
+    "______",             # underline separator
+    "\n\n\n",          # triple newline — common session separator in exports
+]
+
+def find_safe_split_point(text, target_pos):
+    """
+    Find the nearest safe split point at or before target_pos.
+    Prefers splitting at a session boundary marker so sessions
+    are never split across chunks.
+    """
+    search_start = max(0, target_pos - 5000)   # look back up to 5000 chars
+    best_pos     = target_pos                   # fallback: split at target
+
+    for marker in SESSION_MARKERS:
+        idx = text.rfind(marker, search_start, target_pos)
+        if idx != -1 and idx > best_pos - 5000:
+            # Prefer the latest marker found (closest to target without exceeding)
+            best_pos = max(best_pos, idx)
+
+    return best_pos
+
 
 def chunk_text(text, size=CHUNK_SIZE):
     """Split at file boundaries — never cuts a file in the middle."""
@@ -1043,14 +1072,29 @@ Use empty arrays [] if nothing found. Do NOT invent — only extract what is exp
 
 CALL_INTEL_SYSTEM = (
     "You are a venture analyst extracting structured call intelligence from NEN Accelerate "
-    "program documents. Return only valid JSON arrays. Never invent data — write "
+    "program documents. Documents may include: transcripts, VP call reports, panel call notes, "
+    "mid-sprint review reports, WhatsApp message exports, email threads, mentor session notes, "
+    "feedback files, and common portfolio documents. "
+    "Extract every distinct call or session record found across ALL document types. "
+    "Return only valid JSON arrays. Never invent data — write "
     "\"Not Available\" for any field not found in the source text."
 )
 
 CALL_INTEL_PROMPT = """Venture: {vname} | Sprint: {sprint} | Chunk {n}/{total}
 
 Extract ALL individual call or session records from the documents below.
-One document may contain multiple sessions — identify and return each separately.
+Documents may include transcripts, VP reports, panel call notes, mid-sprint
+reviews, WhatsApp exports, email threads, and mentor session notes.
+Identify and return EACH distinct call or session separately — do not merge
+multiple calls into one record even if they are in the same document.
+
+Call type guidance:
+- "Sprint call"          → regular expert/mentor session during sprint
+- "Panel call"           → initial evaluation panel before sprint starts
+- "VP call"              → venture partner strategy/scoping call
+- "Mid-sprint VP review" → mid-sprint check-in by venture partner
+- "WhatsApp / Email"     → async communication captured as a document
+- "Other"                → any other session type
 
 CURRENT SPRINT GAPS (already being worked on — do NOT list these as new gaps):
 {sprint_gaps}
@@ -1088,11 +1132,23 @@ Return ONLY a valid JSON array — one object per call:
     "action_items": ["Owner: task by date", "Owner: task by date"],
     "risks_challenges": ["risk 1", "risk 2"],
     "venture_feedback_rating": null,
-    "venture_feedback_text": "Not Available"
+    "venture_feedback_text": "Not Available",
+    "source_document": "name of file or document this call was found in"
   }}
 ]
 
-Return [] if no sessions found in this chunk. No markdown fences.
+CRITICAL rules — read carefully:
+- Return ONE object per distinct call/session — NEVER merge two calls into one record
+- Count the sessions in the document first, then return exactly that many objects
+- If a document contains 6 calls, your array must have 6 objects — not 1, not 3
+- Each call has its OWN date, expert, objective and action items — do not mix them up
+- If a field is unclear or missing for one call, write "Not Available" for that call only
+- Do NOT skip a call just because some fields are empty
+- Do NOT return [] unless the chunk genuinely contains zero session/call content
+- A "session" is any recorded interaction: transcript, VP report, panel notes,
+  WhatsApp thread, email thread, mid-sprint review, or mentor meeting notes
+
+Return [] ONLY if this chunk contains zero session content. No markdown fences.
 
 --- DOCUMENTS (Chunk {n}/{total}) ---
 {text}"""
@@ -1102,7 +1158,15 @@ def extract_call_intelligence(client, vname, sprint,
                                transcript_text, feedback_text,
                                sprint_plan_text, journey_text):
     """
-    Extract structured call intelligence records from all document sources.
+    Extract structured call intelligence records from ALL document sources
+    for a venture. Documents are pre-merged by the caller into transcript_text.
+
+    transcript_text is a combined blob that may include:
+      - Venture folder transcript file
+      - Files from Transcripts (Accelerate Mentor Meetings)/ common folder
+      - Other venture folder documents (VP reports, panel notes, mid-sprint
+        reviews, WhatsApp exports, email threads, etc.)
+      - Venture-specific mentions from common portfolio documents
 
     Per-call record contains all 7 fields:
       1. call_objective
@@ -1114,13 +1178,11 @@ def extract_call_intelligence(client, vname, sprint,
       7. risks_challenges
 
     Plus metadata: expert_name, expert_role, session_date, call_type,
-    venture_feedback_rating, venture_feedback_text.
+    source_document, venture_feedback_rating, venture_feedback_text.
 
-    Sources:
-      - transcript_text    → main source for all 7 fields
-      - feedback_text      → venture_feedback_rating + venture_feedback_text
-      - sprint_plan_text   → current sprint gaps (context only, not repeated as new gaps)
-      - journey_text       → current sprint gaps context
+    feedback_text    → enriches venture_feedback_rating + venture_feedback_text
+    sprint_plan_text → current sprint gaps context (Pass 1, Haiku)
+    journey_text     → current sprint gaps context (Pass 1, Haiku)
 
     Returns list of call record dicts.
     """
@@ -1217,7 +1279,7 @@ No markdown. Null for any missing field.
         except Exception:
             pass
 
-    # ── Step 3: No transcript → skeleton record ──
+    # ── Step 3: No transcript/session docs → skeleton record ──
     if not transcript_text or len(transcript_text.strip()) < 50:
         return [{
             "venture_name":             vname,
@@ -1225,6 +1287,7 @@ No markdown. Null for any missing field.
             "expert_role":              "Not Available",
             "session_date":             "Not Available",
             "call_type":                "Not Available",
+            "source_document":          "No session documents found",
             "call_objective":           "Not Available",
             "discussion_topics":        [],
             "company_updates":          "Not Available",
@@ -1247,7 +1310,7 @@ No markdown. Null for any missing field.
         try:
             resp = client.messages.create(
                 model="claude-sonnet-4-5",
-                max_tokens=3000,
+                max_tokens=6000,    # enough for 8+ calls × 7 fields each
                 system=[{
                     "type": "text",
                     "text": CALL_INTEL_SYSTEM,
@@ -1261,35 +1324,82 @@ No markdown. Null for any missing field.
                 )}]
             )
             raw = re.sub(r"```json|```", "", resp.content[0].text.strip()).strip()
+
+            # Robustly extract JSON array even if Claude adds preamble text
             s = raw.find("["); e = raw.rfind("]") + 1
             if s == -1 or e == 0:
                 continue
-            calls = json.loads(raw[s:e])
+
+            # Guard against truncated JSON from max_tokens boundary
+            json_str = raw[s:e]
+            # If JSON is truncated mid-object, close it gracefully
+            try:
+                calls = json.loads(json_str)
+            except json.JSONDecodeError:
+                # Try to recover partial array — find last complete object
+                last_close = json_str.rfind("},")
+                if last_close > 0:
+                    try:
+                        calls = json.loads(json_str[:last_close+1] + "]")
+                    except Exception:
+                        continue
+                else:
+                    continue
+
             if not isinstance(calls, list):
                 continue
 
             for call in calls:
                 expert = call.get("expert_name", "Not Available")
                 date   = call.get("session_date", "Not Available")
-                dedup_key = f"{expert.lower().strip()}_{date}"
+                obj    = call.get("call_objective", "")[:80]   # use objective as tiebreaker
+
+                # Dedup key: expert + date + objective snippet
+                # Using only expert+date caused same-expert, same-day calls to be dropped
+                # Using objective as tiebreaker preserves distinct calls on same day
+                if date and date != "Not Available":
+                    dedup_key = f"{expert.lower().strip()}_{date}_{obj[:40]}"
+                else:
+                    # No date — use expert + chunk number + position as key
+                    dedup_key = f"{expert.lower().strip()}_chunk{i}_pos{len(all_calls)}"
+
                 if dedup_key in seen_keys:
                     continue
                 seen_keys.add(dedup_key)
 
                 # Enrich with feedback file data and context
                 call["venture_name"]            = vname
-                call["venture_feedback_rating"] = call.get("venture_feedback_rating") or feedback_rating
-                call["venture_feedback_text"]   = call.get("venture_feedback_text") or feedback_summary
+                call["venture_feedback_rating"] = (
+                    call.get("venture_feedback_rating") or feedback_rating
+                )
+                call["venture_feedback_text"] = (
+                    call.get("venture_feedback_text") or feedback_summary
+                )
                 if call["venture_feedback_text"] in ["Not Available", None, ""]:
                     call["venture_feedback_text"] = feedback_summary
                 call["sprint_gaps_context"] = sprint_gaps_context
-                call["sources_used"] = ["Transcript", "Feedback", "Sprint Plan", "Journey Doc"]
+
+                # source_document — where this call record came from
+                if not call.get("source_document"):
+                    call["source_document"] = "Not Available"
+
+                # sources_used — list of all document types passed in
+                call["sources_used"] = [
+                    "Transcript",
+                    "Common Docs (Transcripts folder)",
+                    "Other venture docs",
+                    "Feedback",
+                    "Sprint Plan",
+                    "Journey Doc",
+                ]
 
                 # Ensure all 7 fields exist with defaults
-                for field in ["call_objective", "company_updates", "venture_partner_guidance"]:
+                for field in ["call_objective", "company_updates",
+                               "venture_partner_guidance"]:
                     if field not in call or not call[field]:
                         call[field] = "Not Available"
-                for field in ["discussion_topics", "key_decisions", "action_items", "risks_challenges"]:
+                for field in ["discussion_topics", "key_decisions",
+                               "action_items", "risks_challenges"]:
                     if field not in call or not isinstance(call[field], list):
                         call[field] = []
 
