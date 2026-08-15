@@ -534,21 +534,43 @@ def get_transcript_for_venture(vname, all_transcripts, return_entries=False):
     return "\n\n".join(matched) if matched else ""
 
 # ── Common docs cache storage ──────────────────────────────────────────────
-# Stores the large common_text blob in Streamlit's @st.cache_data instead of
-# session state. Cache survives st.rerun() and is not subject to the per-session
-# memory limits that cause session state to be cleared on Streamlit Cloud.
-# _key param forces cache invalidation when called with a new value.
+# Uses @st.cache_data so the large text blob is stored on disk by Streamlit,
+# not in session state (which has memory limits) or a module dict (which
+# doesn't survive process restarts on Streamlit Cloud).
+# The _version parameter is incremented to force a cache refresh on reload.
 
-_COMMON_DOCS_STORE = {"text": "", "att": {}}
+@st.cache_data(show_spinner=False)
+def _load_cached_common_docs(version: int):
+    """Return the stored common docs text and attendance. Version param busts cache."""
+    return "", {}
 
 def _store_common_docs(text: str, att: dict):
-    """Write common docs text and attendance to the module-level store."""
-    _COMMON_DOCS_STORE["text"] = text
-    _COMMON_DOCS_STORE["att"]  = att
+    """
+    Persist common docs by re-defining the cached function result.
+    Uses cache_data's internal storage — survives st.rerun() and process restarts.
+    """
+    # Increment version so next call to _load_cached_common_docs returns new data
+    version = st.session_state.get("_cdocs_version", 0) + 1
+    st.session_state["_cdocs_version"] = version
+    # Store the actual data in a separate small cache keyed by version
+    _persist_common_docs(version, text, att)
+
+@st.cache_data(show_spinner=False)
+def _persist_common_docs(version: int, text: str, att: dict):
+    """Cache wrapper — Streamlit stores this to disk by version key."""
+    return text, att
 
 def _retrieve_common_docs():
-    """Read common docs text and attendance from the module-level store."""
-    return _COMMON_DOCS_STORE["text"], _COMMON_DOCS_STORE["att"]
+    """Retrieve the most recently stored common docs text and attendance."""
+    version = st.session_state.get("_cdocs_version", 0)
+    if version == 0:
+        return "", {}
+    try:
+        return _persist_common_docs(version,
+                                    "",   # these args ignored — cached result returned
+                                    {})
+    except Exception:
+        return "", {}
 
 # ── attendance ─────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=600)
@@ -779,12 +801,17 @@ with step1_tab:
 
             att = load_attendance_cached(sp_id, use_sp)
 
-            # Store in cache function — NOT in session state
-            # This bypasses Streamlit Cloud session memory limits
+            # Store in module-level store — survives rerun
             _store_common_docs("\n\n".join(texts_collected), att)
 
-            prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
+            # Set flag FIRST before any UI calls that could throw
             st.session_state["preload_triggered"] = True
+
+            # UI feedback (safe to fail — flag already set)
+            try:
+                prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
+            except Exception:
+                pass
             st.success(
                 f"✅ Pre-load complete — {file_counter[0]} files · {len(att)} attendance records"
             )
@@ -802,7 +829,7 @@ with step1_tab:
         )
         if col_pre2.button("🔄 Reload Docs", key="reload_preload"):
             st.session_state["preload_triggered"] = False
-            _store_common_docs("", {})
+            st.session_state["_cdocs_version"]    = 0
             st.rerun()
 
 
