@@ -622,38 +622,79 @@ with step1_tab:
                         # Store FULL PATH in header so folder-based filtering works
                         texts_collected.append(f"=== FILE: {fpath or fname} ===\n{text}")
                         file_counter[0] += 1
-                        status_box.caption(f"📄 Loaded {file_counter[0]} files... latest: {fname[:60]}")
                 except: pass
 
             if use_sp and ENV_CLIENT_ID:
                 try:
                     from sharepoint_reader import SharePointReader
                     sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-                    all_files = []
-                    def collect_files(folder_path):
+
+                    # ── Phase 1: Scan all folders first to get total count ──
+                    status_box.caption("🔍 Scanning folder structure...")
+                    all_files   = []
+                    folder_list = []
+
+                    def collect_files(folder_path, depth=0):
                         try:
                             items = sp_pre.list_folder(folder_path)
+                            sub_folders = [i for i in items if "folder" in i]
+                            files       = [i for i in items if "file"   in i]
+                            folder_list.append(
+                                f"{'  '*depth}📁 {folder_path.split('/')[-1]} "
+                                f"({len(files)} files, {len(sub_folders)} sub-folders)"
+                            )
                             for item in items:
                                 iname = item.get("name","")
                                 ipath = f"{folder_path}/{iname}"
-                                if "folder" in item: collect_files(ipath)
+                                if "folder" in item:
+                                    collect_files(ipath, depth+1)
                                 elif "file" in item:
                                     ext = Path(iname).suffix.lower()
                                     if ext in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]:
                                         if "journey_accelerate_portfolio" not in iname.lower():
                                             all_files.append((iname, ipath))
                         except: pass
+
                     collect_files(COMMON_FOLDER)
                     total_files = len(all_files)
-                    prog_pre.progress(0, text=f"Found {total_files} files — downloading...")
+
+                    # Show folder structure found
+                    folder_items = ("  \n").join(folder_list[:20])
+                    more_txt = ("  \n..." if len(folder_list) > 20 else "")
+                    status_box.markdown(
+                        "**Folder scan complete** — "
+                        + str(len(folder_list)) + " folders  \n"
+                        + "**" + str(total_files) + " files to read**  \n"
+                        + folder_items + more_txt
+                    )
+
+                    # ── Phase 2: Download and extract each file ──
+                    prog_pre.progress(0, text="Found " + str(total_files) + " files — starting download...")
+
                     for fi, (fname, fpath) in enumerate(all_files):
-                        prog_pre.progress((fi+1)/max(total_files,1),
-                                          text=f"Reading {fi+1}/{total_files}: {fname[:50]}")
+                        loaded = file_counter[0]
+                        pct    = (fi + 1) / max(total_files, 1)
+                        rel_folder = "/".join(fpath.split("/")[:-1]).replace(
+                            COMMON_FOLDER, "").strip("/") or "Common Documents"
+
+                        prog_pre.progress(
+                            pct,
+                            text="Reading " + str(fi+1) + "/" + str(total_files) + ": " + fname[:55]
+                        )
+                        status_box.markdown(
+                            "**Downloading files from SharePoint**  \n"
+                            + "Loaded: " + str(loaded) + " files  \n"
+                            + "Progress: " + str(fi+1) + "/" + str(total_files) + "  \n"
+                            + "Folder: `" + rel_folder + "`  \n"
+                            + "File: `" + fname + "`"
+                        )
+
                         try:
                             content_dl = sp_pre.download_file(fpath)
-                            # Pass full path so transcript folder filtering works
-                            process_file_progress(fname, fpath=fpath, content_bytes=content_dl)
+                            process_file_progress(fname, fpath=fpath,
+                                                  content_bytes=content_dl)
                         except: pass
+
                 except Exception as e:
                     st.error(f"Common docs load error: {e}")
 
