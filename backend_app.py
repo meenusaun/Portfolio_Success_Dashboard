@@ -31,16 +31,25 @@ ADMIN_PASSWORD    = os.environ.get("ADMIN_PASSWORD", "nenadmin2026")
 
 SP_FOLDER        = "04. Advisors/2026/Portfolio Success Dashboard"
 COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
+
+# Additional root folders that may contain transcripts
+# Scanned in pre-load alongside Common Documents
+EXTRA_SCAN_FOLDERS = [
+    f"{SP_FOLDER}/Transcripts",
+    f"{SP_FOLDER}/Session Transcripts",
+]
+
 TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Transcripts (Accelerate Mentor Meetings)"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 
 # All folder name variants to match — covers old and new naming
+# Used by extract_transcripts_from_common() to identify transcript files
 TRANSCRIPT_FOLDER_VARIANTS = [
     "transcripts (accelerate mentor meetings)",
     "accelerate mentor meetings",
     "session transcripts",
     "mentor meetings",
-    "transcripts",
+    "transcripts",                  # catches both /Transcripts and sub-folders named transcripts
 ]
 DASHBOARD_FILE   = "0. Journey_Accelerate_Portfolio Dashboard.xlsx"
 
@@ -675,68 +684,104 @@ with step1_tab:
                     from sharepoint_reader import SharePointReader
                     sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
 
-                    # ── Phase 1: Scan folders to get total count ──
-                    status_box.caption("🔍 Scanning folder structure...")
-                    all_files   = []
+                    VALID_EXT    = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt"}
+                    UPDATE_EVERY = 3   # update UI every N files to reduce re-render overhead
+
+                    # ── Single-pass: scan + download together ──────────────
+                    # Merges old Phase 1 + Phase 2 into one recursive walk.
+                    # list_folder() is called once per folder, not twice.
+                    # UI updates every UPDATE_EVERY files to reduce Streamlit overhead.
+
+                    fi          = [0]   # mutable counter for closures
                     folder_list = []
 
-                    def collect_files(folder_path, depth=0):
+                    def scan_and_load(folder_path, depth=0):
                         try:
                             items = sp_pre.list_folder(folder_path)
-                            sub_folders = [i for i in items if "folder" in i]
-                            files       = [i for i in items if "file"   in i]
-                            folder_list.append(
-                                f"{'  '*depth}📁 {folder_path.split('/')[-1]} "
-                                f"({len(files)} files, {len(sub_folders)} sub-folders)"
+                        except Exception:
+                            return
+
+                        sub_folders = [i for i in items if "folder" in i]
+                        files_here  = [i for i in items if "file"   in i]
+
+                        folder_name = folder_path.split("/")[-1]
+                        folder_list.append(
+                            "  " * depth + "📁 " + folder_name
+                            + " (" + str(len(files_here)) + " files)"
+                        )
+
+                        # Update UI to show which folder we're entering
+                        if depth == 0 or len(folder_list) % 3 == 0:
+                            status_box.caption(
+                                "📁 Scanning: " + folder_name
+                                + "  |  Folders found: " + str(len(folder_list))
+                                + "  |  Files loaded: " + str(file_counter[0])
                             )
-                            for item in items:
-                                iname = item.get("name","")
-                                ipath = f"{folder_path}/{iname}"
-                                if "folder" in item:
-                                    collect_files(ipath, depth+1)
-                                elif "file" in item:
-                                    ext = Path(iname).suffix.lower()
-                                    if ext in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]:
-                                        if "journey_accelerate_portfolio" not in iname.lower():
-                                            all_files.append((iname, ipath))
-                        except: pass
 
-                    collect_files(COMMON_FOLDER)
-                    total_files = len(all_files)
+                        # Process files in this folder first
+                        for item in files_here:
+                            iname = item.get("name", "")
+                            ipath = f"{folder_path}/{iname}"
+                            ext   = Path(iname).suffix.lower()
 
-                    folder_items = ("  \n").join(folder_list[:20])
-                    more_txt     = ("  \n..." if len(folder_list) > 20 else "")
-                    status_box.markdown(
-                        "**Folder scan complete** — "
-                        + str(len(folder_list)) + " folders  \n"
-                        + "**" + str(total_files) + " files to read**  \n"
-                        + folder_items + more_txt
-                    )
+                            # Skip non-document files early
+                            if ext not in VALID_EXT:
+                                continue
+                            if "journey_accelerate_portfolio" in iname.lower():
+                                continue
 
-                    # ── Phase 2: Download and extract each file ──
-                    prog_pre.progress(0, text="Found " + str(total_files) + " files — starting download...")
+                            fi[0] += 1
 
-                    for fi, (fname, fpath) in enumerate(all_files):
-                        loaded = file_counter[0]
-                        pct    = (fi + 1) / max(total_files, 1)
-                        rel_folder = "/".join(fpath.split("/")[:-1]).replace(
-                            COMMON_FOLDER, "").strip("/") or "Common Documents"
-                        prog_pre.progress(
-                            pct,
-                            text="Reading " + str(fi+1) + "/" + str(total_files) + ": " + fname[:55]
-                        )
-                        status_box.markdown(
-                            "**Downloading files from SharePoint**  \n"
-                            + "Loaded: " + str(loaded) + " files  \n"
-                            + "Progress: " + str(fi+1) + "/" + str(total_files) + "  \n"
-                            + "Folder: `" + rel_folder + "`  \n"
-                            + "File: `" + fname + "`"
-                        )
+                            # Update progress bar every UPDATE_EVERY files
+                            if fi[0] % UPDATE_EVERY == 0:
+                                prog_pre.progress(
+                                    min(fi[0] / max(fi[0] + 10, 1), 0.95),
+                                    text=(
+                                        "Reading file " + str(fi[0])
+                                        + " | Loaded: " + str(file_counter[0])
+                                        + " | " + iname[:45]
+                                    )
+                                )
+
+                            try:
+                                content_dl = sp_pre.download_file(ipath)
+                                process_file_progress(iname, fpath=ipath,
+                                                      content_bytes=content_dl)
+                            except Exception:
+                                pass
+
+                        # Then recurse into sub-folders
+                        for item in sub_folders:
+                            iname = item.get("name", "")
+                            ipath = f"{folder_path}/{iname}"
+                            scan_and_load(ipath, depth + 1)
+
+                    scan_and_load(COMMON_FOLDER)
+
+                    # Also scan additional transcript root folders
+                    # that sit alongside Common Documents
+                    for extra_folder in EXTRA_SCAN_FOLDERS:
                         try:
-                            content_dl = sp_pre.download_file(fpath)
-                            process_file_progress(fname, fpath=fpath,
-                                                  content_bytes=content_dl)
-                        except: pass
+                            # Only scan if the folder actually exists
+                            test = sp_pre.list_folder(extra_folder)
+                            if test is not None:
+                                status_box.caption(
+                                    "📁 Also scanning: "
+                                    + extra_folder.split("/")[-1]
+                                )
+                                scan_and_load(extra_folder)
+                        except Exception:
+                            pass  # folder doesn't exist — skip silently
+
+                    # Final summary
+                    folder_summary = "  \n".join(folder_list[:25])
+                    more_str = ("  \n..." if len(folder_list) > 25 else "")
+                    status_box.markdown(
+                        "**Scan complete** — "
+                        + str(len(folder_list)) + " folders  |  "
+                        + str(file_counter[0]) + " files loaded  \n"
+                        + folder_summary + more_str
+                    )
 
                 except Exception as e:
                     st.error(f"Common docs load error: {e}")
@@ -1668,47 +1713,80 @@ with step5_tab:
 
     # ── Transcript diagnostic ─────────────────────────
     with st.expander("🔍 Diagnostic — which transcript files were found?", expanded=False):
-        st.caption(
-            "Run this before processing to confirm the correct transcript folder "
-            "is being read. If the list is empty or missing ventures, the folder "
-            "name may not match — check the constants at the top of this file."
-        )
         common_text_diag = st.session_state.get("common_text_sig", "")
-        all_tr_diag = extract_transcripts_from_common(common_text_diag)
 
-        if not all_tr_diag:
-            st.error(
-                f"❌ No transcript files found in common documents.\n\n"
-                f"Expected folder: `{TRANSCRIPT_FOLDER}`\n\n"
-                f"Matching on folder variants: {TRANSCRIPT_FOLDER_VARIANTS}\n\n"
-                f"**Fix:** Check that your SharePoint folder name exactly matches "
-                f"one of the variants above, or update `TRANSCRIPT_FOLDER_VARIANTS` "
-                f"in backend_app.py to include your actual folder name."
-            )
+        if not common_text_diag:
+            st.warning("Pre-load has not run yet. Run Step 0 first.")
         else:
-            st.success(f"✅ {len(all_tr_diag)} transcript file(s) found in common documents")
-            st.markdown("**Files found:**")
-            for t in all_tr_diag:
-                st.markdown(
-                    f"- `{t['path']}` — {len(t['text']):,} chars"
-                )
+            # ── Tab 1: All stored file paths ──────────────────────
+            diag_t1, diag_t2, diag_t3 = st.tabs([
+                "All files stored", "Transcript files found", "Venture matching"
+            ])
 
-            st.divider()
-            st.markdown("**Venture matching preview** — which ventures get transcripts?")
-            diag_matched, diag_unmatched = [], []
-            for vn in ventures_list:
-                tr = get_transcript_for_venture(vn, all_tr_diag)
-                if tr:
-                    diag_matched.append(f"✅ {vn} — {len(tr):,} chars")
+            with diag_t1:
+                st.caption(
+                    "Every file stored in common_text_sig after pre-load. "
+                    "If your transcript folder files don't appear here, they "
+                    "weren't loaded during Step 0 — re-run pre-load."
+                )
+                all_sections = [
+                    s.split("===")[0].strip()
+                    for s in common_text_diag.split("=== FILE:")
+                    if s.strip()
+                ]
+                st.success(f"**{len(all_sections)} total files stored**")
+                # Group by folder
+                folder_groups: dict = {}
+                for p in all_sections:
+                    folder = "/".join(p.split("/")[:-1]) or "root"
+                    folder_groups.setdefault(folder, []).append(p.split("/")[-1])
+                for folder, fnames in sorted(folder_groups.items()):
+                    st.markdown(f"**📁 {folder}** ({len(fnames)} files)")
+                    for fn in fnames:
+                        st.caption(f"   📄 {fn}")
+
+            with diag_t2:
+                all_tr_diag = extract_transcripts_from_common(common_text_diag)
+                if not all_tr_diag:
+                    extra_list = "\n".join(f"- `{f}`" for f in EXTRA_SCAN_FOLDERS)
+                    st.error(
+                        "❌ No transcript files matched.\n\n"
+                        "Matching on folder variants: "
+                        + str(TRANSCRIPT_FOLDER_VARIANTS)
+                        + "\n\nFilename keywords: transcript, session, meeting, "
+                        "mentor, call, discussion, minutes\n\n"
+                        "**Fix:** Check the 'All files stored' tab — if your "
+                        "transcript files appear there, add your exact folder name "
+                        "to TRANSCRIPT_FOLDER_VARIANTS in backend_app.py."
+                    )
                 else:
-                    diag_unmatched.append(f"⬜ {vn} — no match")
-            for line in diag_matched:
-                st.markdown(line)
-            if diag_unmatched:
-                st.markdown("---")
-                st.caption("Ventures with no transcript match:")
-                for line in diag_unmatched:
-                    st.markdown(line)
+                    st.success(f"✅ {len(all_tr_diag)} transcript file(s) matched")
+                    for t in all_tr_diag:
+                        st.caption(f"📄 `{t['path']}` — {len(t['text']):,} chars")
+
+            with diag_t3:
+                all_tr_diag = extract_transcripts_from_common(common_text_diag)
+                if not all_tr_diag:
+                    st.warning("No transcript files found — see 'Transcript files found' tab.")
+                else:
+                    diag_matched, diag_unmatched = [], []
+                    for vn in ventures_list:
+                        tr = get_transcript_for_venture(vn, all_tr_diag)
+                        if tr:
+                            diag_matched.append(f"✅ {vn} — {len(tr):,} chars")
+                        else:
+                            diag_unmatched.append(f"⬜ {vn} — no match")
+                    st.caption(
+                        f"{len(diag_matched)} ventures matched · "
+                        f"{len(diag_unmatched)} with no transcript"
+                    )
+                    for line in diag_matched:
+                        st.markdown(line)
+                    if diag_unmatched:
+                        st.divider()
+                        st.caption("Ventures with no transcript match:")
+                        for line in diag_unmatched:
+                            st.markdown(line)
     st.markdown("**⚡ Skip already-processed ventures**")
     ci_upload = st.file_uploader(
         "Upload existing call_intelligence_repository.json",
