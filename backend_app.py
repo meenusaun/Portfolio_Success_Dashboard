@@ -533,44 +533,85 @@ def get_transcript_for_venture(vname, all_transcripts, return_entries=False):
         return matched_entries
     return "\n\n".join(matched) if matched else ""
 
-# ── Common docs cache storage ──────────────────────────────────────────────
-# Uses @st.cache_data so the large text blob is stored on disk by Streamlit,
-# not in session state (which has memory limits) or a module dict (which
-# doesn't survive process restarts on Streamlit Cloud).
-# The _version parameter is incremented to force a cache refresh on reload.
+# ── File index storage ────────────────────────────────────────────────────
+# Pre-load now stores ONLY a file index (SP paths) — not file content.
+# Content is read on-demand per venture during each batch run.
+# Index is tiny (~few KB) so no session state memory issues.
 
-@st.cache_data(show_spinner=False)
-def _load_cached_common_docs(version: int):
-    """Return the stored common docs text and attendance. Version param busts cache."""
+def _store_file_index(index: dict, att: dict):
+    """
+    Store the file index and attendance in session state.
+    index = {sp_path: file_type_hint} for every file in Common Documents.
+    att   = {venture_name: {date: present/absent}}
+    Both are small enough to survive in session state safely.
+    """
+    st.session_state["_file_index"] = index
+    st.session_state["_att_cache"]  = att
+
+def _retrieve_file_index():
+    """Return (index, att) or ({}, {}) if not yet loaded."""
+    return (
+        st.session_state.get("_file_index", {}),
+        st.session_state.get("_att_cache",  {})
+    )
+
+def _read_venture_files_from_index(vname, sp):
+    """
+    Read all Common Documents files relevant to a venture on demand.
+    Uses the file index to find candidates, downloads only matching files.
+
+    Returns combined text string with === SOURCE: filename === headers.
+    """
+    index, _ = _retrieve_file_index()
+    if not index or not sp:
+        return ""
+
+    vname_lower = vname.lower()
+    skip_words  = {"and","the","pvt","ltd","llp","inc","for","with","from","that"}
+    vwords      = [w for w in vname_lower.split() if len(w) > 3 and w not in skip_words]
+
+    parts = []
+    for fpath, ftype in index.items():
+        fpath_lower = fpath.lower()
+        fname       = fpath.split("/")[-1]
+        fname_lower = fname.lower()
+
+        # Always include transcript-folder files — will be matched by content
+        is_transcript_folder = any(v in fpath_lower for v in TRANSCRIPT_FOLDER_VARIANTS)
+
+        # Check if path or filename mentions the venture
+        name_in_path = (
+            vname_lower in fpath_lower
+            or any(w in fpath_lower for w in vwords)
+        )
+
+        if not is_transcript_folder and not name_in_path:
+            continue
+
+        try:
+            content_bytes = sp.download_file(fpath)
+            text = extract_text_bytes(content_bytes, fname)
+            if text and len(text) >= 50:
+                # For transcript files, check if venture appears in content
+                if is_transcript_folder and not name_in_path:
+                    text_lower = text[:3000].lower()
+                    if not (vname_lower in text_lower or
+                            any(w in text_lower for w in vwords if len(w) > 5)):
+                        continue
+                parts.append(f"=== SOURCE: {fpath} ===\n{text}")
+        except Exception:
+            pass
+
+    return "\n\n".join(parts)
+
+# Backward compat shim — steps that still call _retrieve_common_docs()
+# now get empty string (harmless — they will use on-demand reading instead)
+def _retrieve_common_docs():
     return "", {}
 
 def _store_common_docs(text: str, att: dict):
-    """
-    Persist common docs by re-defining the cached function result.
-    Uses cache_data's internal storage — survives st.rerun() and process restarts.
-    """
-    # Increment version so next call to _load_cached_common_docs returns new data
-    version = st.session_state.get("_cdocs_version", 0) + 1
-    st.session_state["_cdocs_version"] = version
-    # Store the actual data in a separate small cache keyed by version
-    _persist_common_docs(version, text, att)
+    pass  # no-op — replaced by file index approach
 
-@st.cache_data(show_spinner=False)
-def _persist_common_docs(version: int, text: str, att: dict):
-    """Cache wrapper — Streamlit stores this to disk by version key."""
-    return text, att
-
-def _retrieve_common_docs():
-    """Retrieve the most recently stored common docs text and attendance."""
-    version = st.session_state.get("_cdocs_version", 0)
-    if version == 0:
-        return "", {}
-    try:
-        return _persist_common_docs(version,
-                                    "",   # these args ignored — cached result returned
-                                    {})
-    except Exception:
-        return "", {}
 
 # ── attendance ─────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=600)
@@ -719,32 +760,29 @@ with step1_tab:
         st.info("**Step 0 — Pre-load Common Documents first** before running any batch.")
 
         if st.button("📂 Pre-load Common Documents & Attendance", key="preload_btn"):
-            status_box   = st.empty()
-            prog_pre     = st.progress(0, text="Scanning Common Documents folder...")
-            file_counter    = [0]
-            texts_collected = []
+            status_box = st.empty()
+            prog_pre   = st.progress(0, text="Building file index...")
 
-            def process_file_progress(fname, fpath="", content_bytes=None):
-                ext = Path(fname).suffix.lower()
-                if ext not in [".xlsx",".xls",".docx",".pdf",".pptx",".ppt"]: return
-                if "journey_accelerate_portfolio" in fname.lower(): return
-                try:
-                    text = extract_text_bytes(content_bytes, fname)
-                    if text and len(text) >= 50:
-                        texts_collected.append(f"=== FILE: {fpath or fname} ===\n{text}")
-                        file_counter[0] += 1
-                except: pass
+            file_index  = {}   # {sp_path: file_type_hint}
+            folder_list = []
+            fi          = [0]
+            VALID_EXT   = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt"}
 
             if use_sp and ENV_CLIENT_ID:
                 try:
                     from sharepoint_reader import SharePointReader
-                    sp_pre    = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-                    VALID_EXT = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt"}
-                    UPDATE_EVERY = 3
-                    fi          = [0]
-                    folder_list = []
+                    sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
 
-                    def scan_and_load(folder_path, depth=0):
+                    def classify_file(fname):
+                        fl = fname.lower()
+                        if any(v in fl for v in TRANSCRIPT_FOLDER_VARIANTS): return "transcript"
+                        if "feedback" in fl:     return "feedback"
+                        if "journey"  in fl:     return "journey"
+                        if "sprint"   in fl:     return "sprint"
+                        if "attendance" in fl:   return "attendance"
+                        return "other"
+
+                    def index_folder(folder_path, depth=0):
                         try:
                             items = sp_pre.list_folder(folder_path)
                         except Exception:
@@ -752,84 +790,86 @@ with step1_tab:
                         sub_folders = [i for i in items if "folder" in i]
                         files_here  = [i for i in items if "file"   in i]
                         folder_name = folder_path.split("/")[-1]
-                        folder_list.append(
-                            "  " * depth + "📁 " + folder_name
-                            + " (" + str(len(files_here)) + " files)"
-                        )
-                        if depth == 0 or len(folder_list) % 3 == 0:
+                        folder_list.append("  " * depth + "📁 " + folder_name
+                                           + " (" + str(len(files_here)) + " files)")
+                        if len(folder_list) % 5 == 0:
                             status_box.caption(
-                                "📁 Scanning: " + folder_name
-                                + "  |  Folders: " + str(len(folder_list))
-                                + "  |  Loaded: " + str(file_counter[0])
+                                "Indexing: " + folder_name
+                                + " | Folders: " + str(len(folder_list))
+                                + " | Files indexed: " + str(fi[0])
                             )
                         for item in files_here:
-                            iname = item.get("name", "")
+                            iname = item.get("name","")
                             ipath = f"{folder_path}/{iname}"
                             if Path(iname).suffix.lower() not in VALID_EXT: continue
                             if "journey_accelerate_portfolio" in iname.lower(): continue
+                            # Store folder path in classify so transcript folder is detectable
+                            ftype = "transcript" if any(
+                                v in folder_path.lower() for v in TRANSCRIPT_FOLDER_VARIANTS
+                            ) else classify_file(iname)
+                            file_index[ipath] = ftype
                             fi[0] += 1
-                            if fi[0] % UPDATE_EVERY == 0:
+                            if fi[0] % 5 == 0:
                                 prog_pre.progress(
-                                    min(fi[0] / max(fi[0] + 10, 1), 0.95),
-                                    text="Reading " + str(fi[0]) + " | " + iname[:50]
+                                    min(fi[0]/max(fi[0]+20,1), 0.9),
+                                    text="Indexed " + str(fi[0]) + " files | " + iname[:50]
                                 )
-                            try:
-                                content_dl = sp_pre.download_file(ipath)
-                                process_file_progress(iname, fpath=ipath,
-                                                      content_bytes=content_dl)
-                            except Exception:
-                                pass
                         for item in sub_folders:
-                            iname = item.get("name", "")
-                            scan_and_load(f"{folder_path}/{iname}", depth + 1)
+                            iname = item.get("name","")
+                            index_folder(f"{folder_path}/{iname}", depth+1)
 
-                    scan_and_load(COMMON_FOLDER)
-                    for extra_folder in EXTRA_SCAN_FOLDERS:
+                    index_folder(COMMON_FOLDER)
+                    for extra in EXTRA_SCAN_FOLDERS:
                         try:
-                            if sp_pre.list_folder(extra_folder) is not None:
-                                scan_and_load(extra_folder)
+                            if sp_pre.list_folder(extra):
+                                index_folder(extra)
                         except Exception:
                             pass
 
-                    folder_summary = "  \n".join(folder_list[:25])
+                    folder_summary = "  \n".join(folder_list[:30])
                     status_box.markdown(
-                        "**Scan complete** — " + str(len(folder_list))
-                        + " folders  |  " + str(file_counter[0]) + " files loaded"
+                        "**Index complete** — "
+                        + str(len(folder_list)) + " folders  |  "
+                        + str(fi[0]) + " files indexed  \n" + folder_summary
                     )
                 except Exception as e:
-                    st.error(f"Common docs load error: {e}")
+                    st.error(f"Index error: {e}")
 
             att = load_attendance_cached(sp_id, use_sp)
 
-            # Store in module-level store — survives rerun
-            _store_common_docs("\n\n".join(texts_collected), att)
+            # Store ONLY the index and attendance — no file content
+            # Both are tiny and safe to keep in session state
+            _store_file_index(file_index, att)
 
-            # Set flag FIRST before any UI calls that could throw
+            # Set flag FIRST before any UI calls
             st.session_state["preload_triggered"] = True
 
-            # UI feedback (safe to fail — flag already set)
             try:
-                prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
+                prog_pre.progress(1.0, text=f"✅ Done — {fi[0]} files indexed")
             except Exception:
                 pass
             st.success(
-                f"✅ Pre-load complete — {file_counter[0]} files · {len(att)} attendance records"
+                f"✅ Index built — {fi[0]} files across {len(folder_list)} folders  "
+                f"· {len(att)} attendance records  "
+                f"\nFiles will be read on demand during each batch run."
             )
             st.rerun()
-
     else:
         # Pre-load done — retrieve from cache and show batch controls
-        common_text_sig, att_data_sig = _retrieve_common_docs()
+        file_index, att_data_sig = _retrieve_file_index()
 
-        cdocs_files = common_text_sig.count("=== FILE:")
         col_pre1, col_pre2 = st.columns([4,1])
+        n_transcript = sum(1 for v in file_index.values() if v == "transcript")
         col_pre1.success(
-            f"✅ Common Documents loaded — {cdocs_files} files "
-            f"· {len(att_data_sig)} attendance records"
+            f"✅ File index loaded — {len(file_index)} files indexed  "
+            f"· {n_transcript} transcript files  "
+            f"· {len(att_data_sig)} attendance records  "
+            f"· Files read on-demand per batch"
         )
-        if col_pre2.button("🔄 Reload Docs", key="reload_preload"):
+        if col_pre2.button("🔄 Rebuild Index", key="reload_preload"):
             st.session_state["preload_triggered"] = False
-            st.session_state["_cdocs_version"]    = 0
+            st.session_state.pop("_file_index", None)
+            st.session_state.pop("_att_cache",  None)
             st.rerun()
 
 
@@ -915,12 +955,10 @@ with step2_tab:
         st.session_state[FB_RESULTS_KEY] = {}
     fb_results = st.session_state[FB_RESULTS_KEY]
 
-    if True:
-        all_transcripts = extract_transcripts_from_common(_retrieve_common_docs()[0])
-        st.info(f"📁 Using {len(all_transcripts)} transcript file(s) from pre-loaded Common Documents")
-    else:
-        all_transcripts = []
-        st.warning("⚠️ Go to Step 1 and pre-load Common Documents first.")
+    # Transcripts are read on-demand per venture during batch
+    all_transcripts = []  # kept for compat — batch uses _read_venture_files_from_index
+    n_tr = sum(1 for v in _retrieve_file_index()[0].values() if v == "transcript")
+    st.info(f"📁 {n_tr} transcript files in index — will be read per venture during batch")
 
     for bi, batch in enumerate(fb_batches):
         batch_done = sum(1 for v in batch if fb_results.get(v,{}).get("status") == "done")
@@ -954,8 +992,9 @@ with step2_tab:
                     vfiles = load_v_files(vname)
                     fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                     tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-                    session_tr_text    = get_transcript_for_venture(vname, all_transcripts)
-                    combined_transcript = "\n\n".join(t for t in [tr_text, session_tr_text] if t)
+                    # Read common transcript files on-demand for this venture
+                    common_tr_text     = _read_venture_files_from_index(vname, sp_reader)
+                    combined_transcript = "\n\n".join(t for t in [tr_text, common_tr_text] if t)
 
                     from processor import extract_session_feedback
                     sessions = extract_session_feedback(
@@ -1094,19 +1133,25 @@ with step3_tab:
                 lookup[fname] = {"path": fpath, "text": text}
         return lookup
 
-    journey_docs = build_journey_lookup(_retrieve_common_docs()[0])
+    # Build journey lookup from file index — read journey files on demand
+    def build_journey_index_lookup():
+        index, _ = _retrieve_file_index()
+        lookup = {}
+        JOURNEY_MARKERS = ["sign off journey", "journey documents", "js1", "js2",
+                           "growth journey", "journey report"]
+        for fpath, ftype in index.items():
+            if any(m in fpath.lower() for m in JOURNEY_MARKERS):
+                fname = fpath.split("/")[-1]
+                lookup[fname] = {"path": fpath, "text": None}  # text loaded on demand
+        return lookup
+    journey_docs = build_journey_index_lookup()
 
     # ── Debug: show ALL paths in common_text_sig to diagnose missing folders ──
-    with st.expander("🔍 Debug — All paths loaded in Common Documents (Step 0)"):
-        all_paths = []
-        for section in _retrieve_common_docs()[0].split("=== FILE:"):
-            if not section.strip(): continue
-            header_end = section.find("===")
-            if header_end == -1: continue
-            fpath = section[:header_end].strip()
-            if fpath: all_paths.append(fpath)
+    with st.expander("🔍 Debug — All paths in file index (Step 0)"):
+        index_debug, _ = _retrieve_file_index()
+        all_paths = list(index_debug.keys())
         if all_paths:
-            st.caption(f"Total files loaded: {len(all_paths)}")
+            st.caption(f"Total files in index: {len(all_paths)}")
             journey_paths = [p for p in all_paths if "journey" in p.lower() or "js1" in p.lower() or "js2" in p.lower() or "sign off" in p.lower()]
             if journey_paths:
                 st.markdown("**Journey-related paths found:**")
@@ -1127,21 +1172,34 @@ with step3_tab:
     st.divider()
 
     def find_journey_doc(vname, journey_docs):
-        """Match venture name to journey document by filename or content."""
+        """Match venture name to journey document — loads text on demand from SP."""
         from difflib import SequenceMatcher
         vname_lower = vname.lower()
         vwords = [w for w in vname_lower.split() if len(w) > 3]
 
-        # Match by filename
+        def get_text(doc):
+            """Download and cache text for a journey doc entry."""
+            if doc.get("text") is not None:
+                return doc["text"]
+            try:
+                content_bytes = sp_reader.download_file(doc["path"])
+                text = extract_text_bytes(content_bytes, doc["path"].split("/")[-1])
+                doc["text"] = text or ""
+            except Exception:
+                doc["text"] = ""
+            return doc["text"]
+
+        # Match by filename first (no download needed)
         for fname, doc in journey_docs.items():
             fl = fname.lower()
-            if vname_lower in fl: return doc["text"]
-            if any(w in fl for w in vwords): return doc["text"]
+            if vname_lower in fl or any(w in fl for w in vwords):
+                return get_text(doc)
 
-        # Match by content (first 1000 chars)
+        # Match by content — download each candidate
         for fname, doc in journey_docs.items():
-            if vname_lower in doc["text"].lower()[:1000]:
-                return doc["text"]
+            text = get_text(doc)
+            if text and vname_lower in text.lower()[:1000]:
+                return text
         return ""
 
     for bi, batch in enumerate(j_batches):
@@ -1332,7 +1390,7 @@ with step4_tab:
     st.caption(f"{len(p_target)} ventures · {len(p_batches)} batches")
     st.divider()
 
-    common_text_p = _retrieve_common_docs()[0]
+    # Step 4 reads common docs per-venture on demand during batch
 
     for bi, batch in enumerate(p_batches):
         batch_done = sum(1 for v in batch
@@ -1377,7 +1435,7 @@ with step4_tab:
                     others  = [sp_get_text(p) for k,p in vfiles.items() if k.startswith("other_")]
                     others  = [t for t in others if t]
 
-                    venture_common = extract_venture_from_common(vname, common_text_p)
+                    venture_common = _read_venture_files_from_index(vname, sp_reader)
 
                     sources = {
                         "Feedback": fb_text, "Transcript": tr_text,
@@ -1453,9 +1511,10 @@ with step5_tab:
 
     # ── Transcript diagnostic ─────────────────────────
     with st.expander("🔍 Diagnostic — which transcript files were found?", expanded=False):
-        common_text_diag = _retrieve_common_docs()[0]
+        index_diag, _ = _retrieve_file_index()
+        common_text_diag = ""  # not available — using file index approach
 
-        if not common_text_diag:
+        if not index_diag:
             st.warning("Pre-load has not run yet. Run Step 0 first.")
         else:
             # ── Tab 1: All stored file paths ──────────────────────
@@ -1568,7 +1627,7 @@ with step5_tab:
     st.caption(f"{len(ci_target)} ventures · {len(ci_batches)} batches of {ci_batch_size}")
     st.divider()
 
-    common_text_ci = _retrieve_common_docs()[0]
+    # Step 5 reads common docs per-venture on demand during batch
 
     # ── Batch processing ──────────────────────────────
     for bi, batch in enumerate(ci_batches):
@@ -1652,17 +1711,30 @@ with step5_tab:
                                 )
                     other_text = "\n\n".join(other_docs)
 
-                    # ── Common Documents — venture-specific mentions ──
-                    venture_common_text = extract_venture_from_common(
-                        vname, common_text_ci
+                    # ── Common Documents — read on demand from file index ──
+                    # Downloads only files relevant to this venture from SharePoint.
+                    # No large pre-loaded blob needed — uses the file index built
+                    # during Step 0 pre-load (just SP paths, no content).
+                    venture_common_text = _read_venture_files_from_index(
+                        vname, sp_reader
                     )
 
-                    # ── Transcripts from Transcripts folder ──────────
-                    all_transcripts = extract_transcripts_from_common(common_text_ci)
-                    matched_transcripts = get_transcript_for_venture(
-                        vname, all_transcripts, return_entries=True
-                    )
-                    # Add common transcript file paths to file_paths dict
+                    # Extract transcript entries from on-demand text
+                    # for file_paths dict population
+                    matched_transcripts = []
+                    for part in venture_common_text.split("=== SOURCE:"):
+                        if not part.strip(): continue
+                        header_end = part.find("===")
+                        if header_end == -1: continue
+                        fpath_part = part[:header_end].strip()
+                        text_part  = part[header_end+3:].strip()
+                        if any(v in fpath_part.lower() for v in TRANSCRIPT_FOLDER_VARIANTS):
+                            matched_transcripts.append({
+                                "path":     fpath_part,
+                                "filename": fpath_part.split("/")[-1],
+                                "text":     text_part,
+                            })
+
                     for ti, entry in enumerate(matched_transcripts):
                         fk = f"common_transcript_{ti}"
                         file_paths[fk] = {
@@ -1672,7 +1744,9 @@ with step5_tab:
                                 entry.get("path","").split("/")[:-1]
                             ),
                         }
-                    common_tr = "\n\n".join(e["text"] for e in matched_transcripts if e.get("text"))
+                    common_tr = "\n\n".join(
+                        e["text"] for e in matched_transcripts if e.get("text")
+                    )
 
                     # ── Combine all transcript-type sources ───────────
                     combined_tr = "\n\n".join(t for t in [
