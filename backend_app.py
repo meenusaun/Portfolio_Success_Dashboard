@@ -267,25 +267,72 @@ st.success(f"✅ Dashboard loaded — {len(ventures_list)} ventures found")
 
 # ── load venture files ─────────────────────────────────
 def load_v_files(vname):
-    files = {}
+    """
+    Load all files from a venture's SharePoint folder, recursively.
+
+    Key changes vs old version:
+    - Recursive: scans sub-folders inside the venture folder
+    - Multiple transcripts: stores transcript_0, transcript_1, ... (not overwriting)
+    - list_folder used (not list_files) so sub-folders are visible
+    """
+    files    = {}
     VALID_EXT = [".xlsx",".xls",".docx",".pdf",".pptx",".ppt",".txt"]
-    if use_sp and sp_reader:
-        folder = f"{SP_FOLDER}/{vname}"
+    tr_count  = 0   # counter for multiple transcript files
+
+    if not (use_sp and sp_reader):
+        return files
+
+    def scan_folder(folder_path):
+        nonlocal tr_count
         try:
-            items = sp_reader.list_files(folder)
-            for fname in items:
-                fl  = fname.lower()
-                fp  = f"{folder}/{fname}"
-                ext = Path(fname).suffix.lower()
-                if ext not in VALID_EXT: continue
-                if "transcript"   in fl: files["transcript"] = fp
-                elif "feedback"   in fl: files["feedback"]   = fp
-                elif "growth sprint" in fl or "sprint plan" in fl: files["sprint"] = fp
-                elif "growth journey" in fl or "journey report" in fl: files["journey"] = fp
-                else:
-                    key = f"other_{len([k for k in files if k.startswith('other')])}"
-                    files[key] = fp
-        except: pass
+            items = sp_reader.list_folder(folder_path)
+        except Exception:
+            # Fallback: try list_files if list_folder not available
+            try:
+                fnames = sp_reader.list_files(folder_path)
+                items  = [{"name": fn, "file": True} for fn in fnames]
+            except Exception:
+                return
+
+        for item in items:
+            iname = item.get("name", "")
+            ipath = f"{folder_path}/{iname}"
+
+            # Recurse into sub-folders
+            if "folder" in item:
+                scan_folder(ipath)
+                continue
+
+            ext = Path(iname).suffix.lower()
+            if ext not in VALID_EXT:
+                continue
+
+            fl = iname.lower()
+
+            if "feedback" in fl:
+                files["feedback"] = ipath
+
+            elif "growth sprint" in fl or "sprint plan" in fl:
+                files["sprint"] = ipath
+
+            elif "growth journey" in fl or "journey report" in fl:
+                files["journey"] = ipath
+
+            elif any(kw in fl for kw in [
+                "transcript", "session", "meeting", "mentor",
+                "call", "discussion", "minutes", "vp report",
+                "panel", "mid-sprint"
+            ]):
+                # Store ALL transcript-type files — not just the first one
+                key = f"transcript_{tr_count}" if tr_count > 0 else "transcript"
+                files[key] = ipath
+                tr_count  += 1
+
+            else:
+                key = f"other_{len([k for k in files if k.startswith('other')])}"
+                files[key] = ipath
+
+    scan_folder(f"{SP_FOLDER}/{vname}")
     return files
 
 # ── load common docs ───────────────────────────────────
@@ -619,7 +666,6 @@ with step1_tab:
                 try:
                     text = extract_text_bytes(content_bytes, fname)
                     if text and len(text) >= 50:
-                        # Store FULL PATH in header so folder-based filtering works
                         texts_collected.append(f"=== FILE: {fpath or fname} ===\n{text}")
                         file_counter[0] += 1
                 except: pass
@@ -629,7 +675,7 @@ with step1_tab:
                     from sharepoint_reader import SharePointReader
                     sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
 
-                    # ── Phase 1: Scan all folders first to get total count ──
+                    # ── Phase 1: Scan folders to get total count ──
                     status_box.caption("🔍 Scanning folder structure...")
                     all_files   = []
                     folder_list = []
@@ -658,9 +704,8 @@ with step1_tab:
                     collect_files(COMMON_FOLDER)
                     total_files = len(all_files)
 
-                    # Show folder structure found
                     folder_items = ("  \n").join(folder_list[:20])
-                    more_txt = ("  \n..." if len(folder_list) > 20 else "")
+                    more_txt     = ("  \n..." if len(folder_list) > 20 else "")
                     status_box.markdown(
                         "**Folder scan complete** — "
                         + str(len(folder_list)) + " folders  \n"
@@ -676,7 +721,6 @@ with step1_tab:
                         pct    = (fi + 1) / max(total_files, 1)
                         rel_folder = "/".join(fpath.split("/")[:-1]).replace(
                             COMMON_FOLDER, "").strip("/") or "Common Documents"
-
                         prog_pre.progress(
                             pct,
                             text="Reading " + str(fi+1) + "/" + str(total_files) + ": " + fname[:55]
@@ -688,7 +732,6 @@ with step1_tab:
                             + "Folder: `" + rel_folder + "`  \n"
                             + "File: `" + fname + "`"
                         )
-
                         try:
                             content_dl = sp_pre.download_file(fpath)
                             process_file_progress(fname, fpath=fpath,
@@ -699,13 +742,22 @@ with step1_tab:
                     st.error(f"Common docs load error: {e}")
 
             st.session_state["common_text_sig"] = "\n\n".join(texts_collected)
-            status_box.caption(f"📅 Loading attendance data...")
+            status_box.caption("📅 Loading attendance data...")
             att = load_attendance_cached(sp_id, use_sp)
             st.session_state["att_data_sig"] = att
             prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
-            st.success(f"✅ Pre-load complete — {file_counter[0]} Common Document files · {len(att)} attendance records")
-            st.rerun()
-        st.stop()
+            st.success(
+                f"✅ Pre-load complete — {file_counter[0]} Common Document files "
+                f"· {len(att)} attendance records  \n"
+                f"Scroll down to see the batch processing options."
+            )
+            # Mark as done so batches render without a full rerun
+            preload_done = True
+
+        # Only stop if pre-load has genuinely not happened yet
+        # (not inside the button block — that would hide the success message)
+        if not preload_done:
+            st.stop()
 
     # Already pre-loaded
     common_text_sig = st.session_state["common_text_sig"]
@@ -1742,10 +1794,20 @@ with step5_tab:
 
                     # ── Load venture folder files ────────────────────
                     vfiles      = load_v_files(vname)
-                    fb_text     = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-                    tr_text     = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-                    sprint_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
-                    jour_text   = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
+                    fb_text     = sp_get_text(vfiles["feedback"]) if "feedback" in vfiles else ""
+                    sprint_text = sp_get_text(vfiles["sprint"])   if "sprint"   in vfiles else ""
+                    jour_text   = sp_get_text(vfiles["journey"])  if "journey"  in vfiles else ""
+
+                    # Read ALL transcript-type files from venture folder
+                    # (could be transcript, transcript_0, transcript_1, etc.)
+                    tr_parts = []
+                    for k, fpath in vfiles.items():
+                        if k == "transcript" or k.startswith("transcript_"):
+                            txt = sp_get_text(fpath)
+                            if txt:
+                                fname_tr = fpath.split("/")[-1]
+                                tr_parts.append(f"=== SOURCE: {fname_tr} ===\n{txt}")
+                    tr_text = "\n\n".join(tr_parts)
 
                     # ── Build file_paths dict — stored in every call record ──
                     # Maps file type → {sp_path, filename} so frontend can
@@ -1801,6 +1863,37 @@ with step5_tab:
                         other_text,
                         venture_common_text,
                     ] if t)
+
+                    # ── Pre-flight: log what each venture got ─────────
+                    # This appears in the progress status so you can see
+                    # which sources are empty before Claude runs
+                    tr_chars        = len(combined_tr)
+                    n_tr_files      = len([k for k in vfiles if k=="transcript" or k.startswith("transcript_")])
+                    n_common_tr     = len(matched_transcripts)
+                    n_other         = len([k for k in vfiles if k.startswith("other_")])
+                    has_feedback    = bool(fb_text)
+                    has_sprint      = bool(sprint_text)
+                    has_journey     = bool(jour_text)
+
+                    prog_ci.progress(
+                        vi / len(batch),
+                        text=(
+                            f"Processing {vname} ({vi+1}/{len(batch)}) — "
+                            f"{tr_chars:,} chars | "
+                            f"{n_tr_files} venture transcripts | "
+                            f"{n_common_tr} common transcripts | "
+                            f"feedback={'✓' if has_feedback else '✗'}"
+                        )
+                    )
+
+                    if tr_chars == 0:
+                        st.warning(
+                            f"⚠️ **{vname}** — no transcript text found.  \n"
+                            f"Venture folder files: {list(vfiles.keys())}  \n"
+                            f"Common transcripts matched: {[e['filename'] for e in matched_transcripts]}  \n"
+                            f"Check that transcript files exist in the venture folder or in  \n"
+                            f"`Transcripts (Accelerate Mentor Meetings)/` and contain the venture name."
+                        )
 
                     try:
                         from processor import extract_call_intelligence
