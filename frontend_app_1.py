@@ -596,6 +596,7 @@ def render_call_detail_fields(call):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def safe_copy(src):
     dst = os.path.join(tempfile.gettempdir(), "nen_fe_" + os.path.basename(src))
     shutil.copy2(src, dst); return dst
 
