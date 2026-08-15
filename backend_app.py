@@ -657,10 +657,19 @@ with step1_tab:
     done_sig = sum(1 for v in sig_results.values() if v.get("status") == "done")
 
     # ── Step 0: Pre-load Common Documents ─────────────────────────────────
-    # Uses if/else — NO st.stop() anywhere. st.stop() inside a tab block
-    # kills the entire app. if/else is the only safe Streamlit pattern here.
-    preload_done = ("common_text_sig" in st.session_state and
-                    "att_data_sig"    in st.session_state)
+    # Uses if/else — NO st.stop() anywhere.
+    _cs_exists  = "common_text_sig" in st.session_state
+    _att_exists = "att_data_sig"    in st.session_state
+    preload_done = _cs_exists and _att_exists
+
+    # Debug: always show current state so we can diagnose
+    with st.expander("🔧 Pre-load status (debug)", expanded=not preload_done):
+        st.write({
+            "common_text_sig in session_state": _cs_exists,
+            "att_data_sig in session_state":    _att_exists,
+            "preload_done":                     preload_done,
+            "session_state keys":               list(st.session_state.keys()),
+        })
 
     if not preload_done:
         # ── Show pre-load button only ──────────────────────────────────────
