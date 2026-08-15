@@ -791,22 +791,26 @@ with step1_tab:
             att = load_attendance_cached(sp_id, use_sp)
             st.session_state["att_data_sig"] = att
             prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
-            st.success(
+            st.session_state["preload_success_msg"] = (
                 f"✅ Pre-load complete — {file_counter[0]} Common Document files "
-                f"· {len(att)} attendance records  \n"
-                f"Scroll down to see the batch processing options."
+                f"· {len(att)} attendance records"
             )
-            # Mark as done so batches render without a full rerun
-            preload_done = True
+            # Rerun so the full page re-renders with preload_done = True
+            # This is the only reliable way in Streamlit to show content
+            # below a conditional st.stop()
+            st.rerun()
 
-        # Only stop if pre-load has genuinely not happened yet
-        # (not inside the button block — that would hide the success message)
+        # Batches only hidden when pre-load genuinely hasn't run
         if not preload_done:
             st.stop()
 
-    # Already pre-loaded
+    # Already pre-loaded — show success banner and reload option
     common_text_sig = st.session_state["common_text_sig"]
     att_data_sig    = st.session_state["att_data_sig"]
+
+    # Show the success message from the pre-load if it just ran
+    if "preload_success_msg" in st.session_state:
+        st.success(st.session_state.pop("preload_success_msg"))
 
     cdocs_files = common_text_sig.count("=== FILE:")
     col_pre1, col_pre2 = st.columns([4,1])
