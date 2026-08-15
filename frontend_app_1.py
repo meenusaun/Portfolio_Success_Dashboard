@@ -605,6 +605,18 @@ def find_col(df, patterns):
             if p.lower() in str(c).lower(): return c
     return None
 
+def get_stage_bucket(pct):
+    try:
+        if pct is None or str(pct).strip() in ["","nan","None","-"]: return "Unknown"
+        p = float(str(pct).replace("%","").replace(",","").strip())
+        if p <= 1.0: p *= 100
+        if p >= 100: return "100%"
+        if p >= 76:  return "76-99%"
+        if p >= 51:  return "51-75%"
+        if p >= 26:  return "26-50%"
+        return "0-25%"
+    except: return "Unknown"
+
 # ── Source file reference chip ────────────────────────────────────────────
 # Instead of downloading files, show a reference chip telling the user
 # which file to look at in SharePoint. No download, no blob, no SP API call.
