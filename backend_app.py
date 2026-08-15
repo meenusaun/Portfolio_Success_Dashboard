@@ -656,16 +656,20 @@ with step1_tab:
     sig_results = st.session_state[SIG_RESULTS_KEY]
     done_sig = sum(1 for v in sig_results.values() if v.get("status") == "done")
 
-    # ── Step 0: Explicit pre-load (never triggers on page render) ──
+    # ── Step 0: Pre-load Common Documents ─────────────────────────────────
+    # Uses if/else — NO st.stop() anywhere. st.stop() inside a tab block
+    # kills the entire app. if/else is the only safe Streamlit pattern here.
     preload_done = ("common_text_sig" in st.session_state and
                     "att_data_sig"    in st.session_state)
 
     if not preload_done:
+        # ── Show pre-load button only ──────────────────────────────────────
         st.info("**Step 0 — Pre-load Common Documents first** before running any batch.")
+
         if st.button("📂 Pre-load Common Documents & Attendance", key="preload_btn"):
-            status_box = st.empty()
-            prog_pre   = st.progress(0, text="Scanning Common Documents folder...")
-            file_counter   = [0]
+            status_box   = st.empty()
+            prog_pre     = st.progress(0, text="Scanning Common Documents folder...")
+            file_counter    = [0]
             texts_collected = []
 
             def process_file_progress(fname, fpath="", content_bytes=None):
@@ -682,17 +686,10 @@ with step1_tab:
             if use_sp and ENV_CLIENT_ID:
                 try:
                     from sharepoint_reader import SharePointReader
-                    sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-
-                    VALID_EXT    = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt"}
-                    UPDATE_EVERY = 3   # update UI every N files to reduce re-render overhead
-
-                    # ── Single-pass: scan + download together ──────────────
-                    # Merges old Phase 1 + Phase 2 into one recursive walk.
-                    # list_folder() is called once per folder, not twice.
-                    # UI updates every UPDATE_EVERY files to reduce Streamlit overhead.
-
-                    fi          = [0]   # mutable counter for closures
+                    sp_pre    = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
+                    VALID_EXT = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt"}
+                    UPDATE_EVERY = 3
+                    fi          = [0]
                     folder_list = []
 
                     def scan_and_load(folder_path, depth=0):
@@ -700,397 +697,355 @@ with step1_tab:
                             items = sp_pre.list_folder(folder_path)
                         except Exception:
                             return
-
                         sub_folders = [i for i in items if "folder" in i]
                         files_here  = [i for i in items if "file"   in i]
-
                         folder_name = folder_path.split("/")[-1]
                         folder_list.append(
                             "  " * depth + "📁 " + folder_name
                             + " (" + str(len(files_here)) + " files)"
                         )
-
-                        # Update UI to show which folder we're entering
                         if depth == 0 or len(folder_list) % 3 == 0:
                             status_box.caption(
                                 "📁 Scanning: " + folder_name
-                                + "  |  Folders found: " + str(len(folder_list))
-                                + "  |  Files loaded: " + str(file_counter[0])
+                                + "  |  Folders: " + str(len(folder_list))
+                                + "  |  Loaded: " + str(file_counter[0])
                             )
-
-                        # Process files in this folder first
                         for item in files_here:
                             iname = item.get("name", "")
                             ipath = f"{folder_path}/{iname}"
-                            ext   = Path(iname).suffix.lower()
-
-                            # Skip non-document files early
-                            if ext not in VALID_EXT:
-                                continue
-                            if "journey_accelerate_portfolio" in iname.lower():
-                                continue
-
+                            if Path(iname).suffix.lower() not in VALID_EXT: continue
+                            if "journey_accelerate_portfolio" in iname.lower(): continue
                             fi[0] += 1
-
-                            # Update progress bar every UPDATE_EVERY files
                             if fi[0] % UPDATE_EVERY == 0:
                                 prog_pre.progress(
                                     min(fi[0] / max(fi[0] + 10, 1), 0.95),
-                                    text=(
-                                        "Reading file " + str(fi[0])
-                                        + " | Loaded: " + str(file_counter[0])
-                                        + " | " + iname[:45]
-                                    )
+                                    text="Reading " + str(fi[0]) + " | " + iname[:50]
                                 )
-
                             try:
                                 content_dl = sp_pre.download_file(ipath)
                                 process_file_progress(iname, fpath=ipath,
                                                       content_bytes=content_dl)
                             except Exception:
                                 pass
-
-                        # Then recurse into sub-folders
                         for item in sub_folders:
                             iname = item.get("name", "")
-                            ipath = f"{folder_path}/{iname}"
-                            scan_and_load(ipath, depth + 1)
+                            scan_and_load(f"{folder_path}/{iname}", depth + 1)
 
                     scan_and_load(COMMON_FOLDER)
-
-                    # Also scan additional transcript root folders
-                    # that sit alongside Common Documents
                     for extra_folder in EXTRA_SCAN_FOLDERS:
                         try:
-                            # Only scan if the folder actually exists
-                            test = sp_pre.list_folder(extra_folder)
-                            if test is not None:
-                                status_box.caption(
-                                    "📁 Also scanning: "
-                                    + extra_folder.split("/")[-1]
-                                )
+                            if sp_pre.list_folder(extra_folder) is not None:
+                                status_box.caption("📁 Also scanning: " + extra_folder.split("/")[-1])
                                 scan_and_load(extra_folder)
                         except Exception:
-                            pass  # folder doesn't exist — skip silently
+                            pass
 
-                    # Final summary
                     folder_summary = "  \n".join(folder_list[:25])
-                    more_str = ("  \n..." if len(folder_list) > 25 else "")
                     status_box.markdown(
-                        "**Scan complete** — "
-                        + str(len(folder_list)) + " folders  |  "
-                        + str(file_counter[0]) + " files loaded  \n"
-                        + folder_summary + more_str
+                        "**Scan complete** — " + str(len(folder_list)) + " folders  |  "
+                        + str(file_counter[0]) + " files loaded  \n" + folder_summary
                     )
-
                 except Exception as e:
                     st.error(f"Common docs load error: {e}")
 
-            st.session_state["common_text_sig"] = "\n\n".join(texts_collected)
-            status_box.caption("📅 Loading attendance data...")
             att = load_attendance_cached(sp_id, use_sp)
-            st.session_state["att_data_sig"] = att
+            st.session_state["common_text_sig"] = "\n\n".join(texts_collected)
+            st.session_state["att_data_sig"]    = att
             prog_pre.progress(1.0, text=f"✅ Done — {file_counter[0]} files loaded")
-            st.session_state["preload_success_msg"] = (
-                f"✅ Pre-load complete — {file_counter[0]} Common Document files "
-                f"· {len(att)} attendance records"
+            st.success(
+                f"✅ Pre-load complete — {file_counter[0]} files · {len(att)} attendance records.  "
+                f"Batches are now available below — scroll down or click '▶ Run All'."
             )
-            # Rerun so the full page re-renders with preload_done = True
-            # This is the only reliable way in Streamlit to show content
-            # below a conditional st.stop()
+            # Force re-render so the else branch (batches) shows immediately
             st.rerun()
 
-        # Batches only hidden when pre-load genuinely hasn't run
-        if not preload_done:
-            st.stop()
+    else:
+        # Pre-load done — show status and batch controls
 
-    # Already pre-loaded — show success banner and reload option
-    common_text_sig = st.session_state["common_text_sig"]
-    att_data_sig    = st.session_state["att_data_sig"]
+        common_text_sig = st.session_state["common_text_sig"]
+        att_data_sig    = st.session_state["att_data_sig"]
 
-    # Show the success message from the pre-load if it just ran
-    if "preload_success_msg" in st.session_state:
-        st.success(st.session_state.pop("preload_success_msg"))
+        # Show the success message from the pre-load if it just ran
 
-    cdocs_files = common_text_sig.count("=== FILE:")
-    col_pre1, col_pre2 = st.columns([4,1])
-    col_pre1.success(f"✅ Common Documents loaded — {cdocs_files} files · {len(att_data_sig)} attendance records")
-    if col_pre2.button("🔄 Reload Docs", key="reload_preload"):
-        del st.session_state["common_text_sig"]
-        del st.session_state["att_data_sig"]
-        st.rerun()
-
-    # ── OPT 3: Upload existing repo to skip already-processed ventures ──
-    st.markdown("---")
-    st.markdown("**⚡ Skip already-processed ventures (saves API credits)**")
-    skip_col1, skip_col2 = st.columns([3,1])
-    with skip_col1:
-        uploaded_repo = st.file_uploader(
-            "Upload existing signals_repository.json — ventures with signals already extracted will be skipped",
-            type=["json"], key="existing_repo_upload",
-            help="Only ventures with zero signals (failed or new) will be re-processed"
-        )
-    if uploaded_repo and "existing_sig_repo" not in st.session_state:
-        try:
-            existing = json.loads(uploaded_repo.read().decode("utf-8"))
-            already_done = {
-                vn for vn, vdata in existing.get("venture_summary", {}).items()
-                if len(vdata.get("signals",{}).get("momentum",[])) > 0
-                or len(vdata.get("signals",{}).get("investment",[])) > 0
-            }
-            st.session_state["existing_sig_repo"]       = existing
-            st.session_state["already_done_ventures"]   = already_done
-        except Exception as e:
-            st.error(f"Could not read file: {e}")
-
-    already_done_ventures = st.session_state.get("already_done_ventures", set())
-    existing_sig_repo     = st.session_state.get("existing_sig_repo", {})
-
-    if already_done_ventures:
-        sk1, sk2 = st.columns([3,1])
-        sk1.info(f"⚡ {len(already_done_ventures)} ventures already have signals — will be skipped  ·  "
-                 f"🆕 {len([v for v in ventures_list if v not in already_done_ventures])} ventures to process")
-        if sk2.button("🗑 Clear skip list", key="clear_skip"):
-            del st.session_state["existing_sig_repo"]
-            del st.session_state["already_done_ventures"]
+        cdocs_files = common_text_sig.count("=== FILE:")
+        col_pre1, col_pre2 = st.columns([4,1])
+        col_pre1.success(f"✅ Common Documents loaded — {cdocs_files} files · {len(att_data_sig)} attendance records")
+        if col_pre2.button("🔄 Reload Docs", key="reload_preload"):
+            del st.session_state["common_text_sig"]
+            del st.session_state["att_data_sig"]
             st.rerun()
 
-        # Pre-populate sig_results from existing repo for skipped ventures
-        for vn, vdata in existing_sig_repo.get("venture_summary", {}).items():
-            if vn in already_done_ventures and vn not in sig_results:
-                sig_results[vn] = {
-                    "status":          "done",
-                    "venture_name":    vn,
-                    "hub":             vdata.get("hub","—"),
-                    "venture_partner": vdata.get("venture_partner","—"),
-                    "sprint":          vdata.get("sprint","—"),
-                    "rag":             {
-                        "overall_rag":      vdata.get("overall_rag","ZERO"),
-                        "momentum_rag":     vdata.get("momentum_rag","ZERO"),
-                        "investment_rag":   vdata.get("investment_rag","ZERO"),
-                        "momentum_reason":  vdata.get("momentum_reason","—"),
-                        "investment_reason":vdata.get("investment_reason","—"),
-                        "momentum_score":   vdata.get("momentum_score",0),
-                        "investment_score": vdata.get("investment_score",0),
-                    },
-                    "signals":         vdata.get("signals", {"momentum":[],"investment":[]}),
-                    "att_sessions":    vdata.get("att_sessions",0),
-                    "att_dates":       vdata.get("att_dates",[]),
-                    "sources_used":    vdata.get("sources_used",[]),
-                    "total_chars":     vdata.get("total_chars",0),
-                    "num_chunks":      vdata.get("num_chunks",0),
-                    "processed_at":    vdata.get("processed_at","—"),
+        # ── OPT 3: Upload existing repo to skip already-processed ventures ──
+        st.markdown("---")
+        st.markdown("**⚡ Skip already-processed ventures (saves API credits)**")
+        skip_col1, skip_col2 = st.columns([3,1])
+        with skip_col1:
+            uploaded_repo = st.file_uploader(
+                "Upload existing signals_repository.json — ventures with signals already extracted will be skipped",
+                type=["json"], key="existing_repo_upload",
+                help="Only ventures with zero signals (failed or new) will be re-processed"
+            )
+        if uploaded_repo and "existing_sig_repo" not in st.session_state:
+            try:
+                existing = json.loads(uploaded_repo.read().decode("utf-8"))
+                already_done = {
+                    vn for vn, vdata in existing.get("venture_summary", {}).items()
+                    if len(vdata.get("signals",{}).get("momentum",[])) > 0
+                    or len(vdata.get("signals",{}).get("investment",[])) > 0
                 }
-        st.session_state[SIG_RESULTS_KEY] = sig_results
-    st.markdown("---")
+                st.session_state["existing_sig_repo"]       = existing
+                st.session_state["already_done_ventures"]   = already_done
+            except Exception as e:
+                st.error(f"Could not read file: {e}")
 
+        already_done_ventures = st.session_state.get("already_done_ventures", set())
+        existing_sig_repo     = st.session_state.get("existing_sig_repo", {})
 
-    for bi, batch in enumerate(batches):
-        batch_done = sum(1 for v in batch if sig_results.get(v,{}).get("status") == "done")
-        icon = "✅" if batch_done == len(batch) else ("🔄" if batch_done > 0 else "⬜")
-        with st.expander(f"{icon} Batch {bi+1}  —  {batch_done}/{len(batch)} done  —  {', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"):
-            for vn in batch:
-                vr = sig_results.get(vn,{})
-                vs = vr.get("status","pending")
-                ic = {"done":"✅","error":"❌","processing":"🔄"}.get(vs,"⬜")
-                if vs == "done":
-                    rag = vr.get("rag",{})
-                    nsig = len(vr.get("signals",{}).get("momentum",[])) + \
-                           len(vr.get("signals",{}).get("investment",[]))
-                    st.caption(f"{ic} {vn}  ·  Overall: {rag.get('overall_rag','')}  ·  "
-                               f"{nsig} signals  ·  {vr.get('total_chars',0):,} chars")
-                elif vs == "error":
-                    st.caption(f"{ic} {vn}  ·  Error: {vr.get('error','')[:80]}")
-                else:
-                    st.caption(f"{ic} {vn}  ·  Not processed")
-
-            st.markdown("")
-            run_batch_btn = st.button(f"▶ Run Batch {bi+1}", key=f"run_sig_batch_{bi}")
-            should_run = run_batch_btn or run_all_sig
-
-            if should_run:
-
-                prog = st.progress(0, text=f"Starting batch {bi+1}...")
-                for vi, vname in enumerate(batch):
-                    # Skip if already done in this session OR in uploaded existing repo
-                    if sig_results.get(vname,{}).get("status") == "done" or                        vname in st.session_state.get("already_done_ventures", set()):
-                        prog.progress((vi+1)/len(batch), text=f"⚡ Skipping {vname} (already processed)")
-                        continue
-                    prog.progress(vi/len(batch), text=f"Processing {vname} ({vi+1}/{len(batch)})...")
-
-                    row    = get_row(vname)
-                    notes  = cv(row, col_notes, default="")
-                    sprint = cv(row, col_sprint)
-                    pct    = row[col_pct] if (row is not None and col_pct) else None
-                    hub    = cv(row, col_hub)
-                    vp     = cv(row, col_vp) if col_vp else "—"
-
-                    # Load venture files
-                    vfiles  = load_v_files(vname)
-                    fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
-                    tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-                    sp_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
-                    jr_text = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
-                    others  = [sp_get_text(p) for k,p in vfiles.items() if k.startswith("other_")]
-                    others  = [t for t in others if t]
-
-                    venture_common = extract_venture_from_common(vname, common_text_sig)
-
-                    sources = {
-                        "Notes": notes or "", "Feedback": fb_text,
-                        "Transcript": tr_text, "Sprint Plan": sp_text,
-                        "Growth Journey": jr_text, "Common Docs": venture_common,
-                    }
-                    for idx, ot in enumerate(others):
-                        sources[f"Venture File {idx+1}"] = ot
-
-                    full_text   = "\n\n".join(f"=== {k} ===\n{v}" for k,v in sources.items() if v)
-                    total_chars = len(full_text)
-                    srcs_used   = [k for k,v in sources.items() if v]
-
-                    att  = get_attendance_for_venture(vname, att_data_sig)
-                    att_sessions = att["sessions"] if att else 0
-                    att_dates    = att["dates"]    if att else []
-                    att_summary  = (f"{att_sessions} sessions ({', '.join(att_dates)})"
-                                    if att_sessions else "No attendance data")
-
-                    from processor import extract_signals_from_text, score_rag_from_signals
-                    signals, num_chunks = extract_signals_from_text(client, vname, sprint, full_text)
-
-                    # Surface credit/API errors immediately — do not silently store empty results
-                    api_errors = signals.get("errors", [])
-                    credit_error = any("credit balance" in str(e) or "billing" in str(e).lower()
-                                       for e in api_errors)
-                    if credit_error:
-                        prog.empty()
-                        st.error(f"❌ Anthropic API credit error on venture '{vname}'. "
-                                 f"Top up credits at console.anthropic.com → Plans & Billing, then re-run.")
-                        st.stop()
-
-                    rag = score_rag_from_signals(client, vname, sprint, notes,
-                                                  att_summary, signals, pct)
-
-                    sig_results[vname] = {
-                        "status":        "done",
-                        "venture_name":  vname,
-                        "hub":           hub,
-                        "venture_partner": vp,
-                        "sprint":        sprint,
-                        "rag":           rag,
-                        "signals":       signals,
-                        "total_chars":   total_chars,
-                        "num_chunks":    num_chunks,
-                        "sources_used":  srcs_used,
-                        "att_sessions":  att_sessions,
-                        "att_dates":     att_dates,
-                        "processed_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                    }
-                    st.session_state[SIG_RESULTS_KEY] = sig_results
-
-                prog.progress(1.0, text=f"✅ Batch {bi+1} complete!")
+        if already_done_ventures:
+            sk1, sk2 = st.columns([3,1])
+            sk1.info(f"⚡ {len(already_done_ventures)} ventures already have signals — will be skipped  ·  "
+                     f"🆕 {len([v for v in ventures_list if v not in already_done_ventures])} ventures to process")
+            if sk2.button("🗑 Clear skip list", key="clear_skip"):
+                del st.session_state["existing_sig_repo"]
+                del st.session_state["already_done_ventures"]
                 st.rerun()
 
-    # ── download / upload signals repo ─────────────────
-    st.divider()
-    done_count_s = sum(1 for v in sig_results.values() if v.get("status") == "done")
-    st.markdown(f"**{done_count_s}/{len(ventures_list)} ventures processed**")
-
-    if done_count_s > 0:
-        dl_col, up_col = st.columns(2)
-        with dl_col:
-            st.markdown("**💾 Download signals_repository.json**")
-            # Build flat records for repository
-            repo_records = []
-            for vn, vr in sig_results.items():
-                if vr.get("status") != "done": continue
-                rag = vr.get("rag",{})
-                for sig in vr.get("signals",{}).get("momentum",[]):
-                    repo_records.append({
+            # Pre-populate sig_results from existing repo for skipped ventures
+            for vn, vdata in existing_sig_repo.get("venture_summary", {}).items():
+                if vn in already_done_ventures and vn not in sig_results:
+                    sig_results[vn] = {
+                        "status":          "done",
                         "venture_name":    vn,
-                        "hub":             vr.get("hub","—"),
-                        "venture_partner": vr.get("venture_partner","—"),
-                        "sprint":          vr.get("sprint","—"),
-                        "signal_type":     "Momentum",
-                        "rag":             rag.get("momentum_rag","ZERO"),
-                        "rag_description": rag.get("momentum_reason","—"),
-                        "signal_category": sig.get("type",""),
-                        "evidence":        sig.get("evidence",""),
-                        "source":          sig.get("source",""),
-                        "overall_rag":     rag.get("overall_rag","ZERO"),
-                        "momentum_rag":    rag.get("momentum_rag","ZERO"),
-                        "investment_rag":  rag.get("investment_rag","ZERO"),
-                        "processed_at":    vr.get("processed_at",""),
-                    })
-                for sig in vr.get("signals",{}).get("investment",[]):
-                    repo_records.append({
-                        "venture_name":    vn,
-                        "hub":             vr.get("hub","—"),
-                        "venture_partner": vr.get("venture_partner","—"),
-                        "sprint":          vr.get("sprint","—"),
-                        "signal_type":     "Self Investment",
-                        "rag":             rag.get("investment_rag","ZERO"),
-                        "rag_description": rag.get("investment_reason","—"),
-                        "signal_category": sig.get("type",""),
-                        "evidence":        sig.get("evidence",""),
-                        "source":          sig.get("source",""),
-                        "overall_rag":     rag.get("overall_rag","ZERO"),
-                        "momentum_rag":    rag.get("momentum_rag","ZERO"),
-                        "investment_rag":  rag.get("investment_rag","ZERO"),
-                        "processed_at":    vr.get("processed_at",""),
-                    })
-                # Add summary row per venture (no individual signal)
-                if not vr.get("signals",{}).get("momentum") and \
-                   not vr.get("signals",{}).get("investment"):
-                    repo_records.append({
-                        "venture_name":    vn,
-                        "hub":             vr.get("hub","—"),
-                        "venture_partner": vr.get("venture_partner","—"),
-                        "sprint":          vr.get("sprint","—"),
-                        "signal_type":     "No Signals",
-                        "rag":             rag.get("overall_rag","ZERO"),
-                        "rag_description": "No signals extracted",
-                        "signal_category": "",
-                        "evidence":        "",
-                        "source":          "",
-                        "overall_rag":     rag.get("overall_rag","ZERO"),
-                        "momentum_rag":    rag.get("momentum_rag","ZERO"),
-                        "investment_rag":  rag.get("investment_rag","ZERO"),
-                        "processed_at":    vr.get("processed_at",""),
-                    })
-
-            save_payload = {
-                "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                "venture_count": done_count_s,
-                "records":       repo_records,
-                "venture_summary": {
-                    vn: {
-                        "venture_name":    vn,
-                        "hub":             vr.get("hub","—"),
-                        "venture_partner": vr.get("venture_partner","—"),
-                        "sprint":          vr.get("sprint","—"),
-                        "overall_rag":     vr.get("rag",{}).get("overall_rag","ZERO"),
-                        "momentum_rag":    vr.get("rag",{}).get("momentum_rag","ZERO"),
-                        "investment_rag":  vr.get("rag",{}).get("investment_rag","ZERO"),
-                        "momentum_reason": vr.get("rag",{}).get("momentum_reason","—"),
-                        "investment_reason":vr.get("rag",{}).get("investment_reason","—"),
-                        "momentum_score":  vr.get("rag",{}).get("momentum_score",0),
-                        "investment_score":vr.get("rag",{}).get("investment_score",0),
-                        "signals":         vr.get("signals",{}),
-                        "att_sessions":    vr.get("att_sessions",0),
-                        "att_dates":       vr.get("att_dates",[]),
-                        "sources_used":    vr.get("sources_used",[]),
-                        "processed_at":    vr.get("processed_at",""),
+                        "hub":             vdata.get("hub","—"),
+                        "venture_partner": vdata.get("venture_partner","—"),
+                        "sprint":          vdata.get("sprint","—"),
+                        "rag":             {
+                            "overall_rag":      vdata.get("overall_rag","ZERO"),
+                            "momentum_rag":     vdata.get("momentum_rag","ZERO"),
+                            "investment_rag":   vdata.get("investment_rag","ZERO"),
+                            "momentum_reason":  vdata.get("momentum_reason","—"),
+                            "investment_reason":vdata.get("investment_reason","—"),
+                            "momentum_score":   vdata.get("momentum_score",0),
+                            "investment_score": vdata.get("investment_score",0),
+                        },
+                        "signals":         vdata.get("signals", {"momentum":[],"investment":[]}),
+                        "att_sessions":    vdata.get("att_sessions",0),
+                        "att_dates":       vdata.get("att_dates",[]),
+                        "sources_used":    vdata.get("sources_used",[]),
+                        "total_chars":     vdata.get("total_chars",0),
+                        "num_chunks":      vdata.get("num_chunks",0),
+                        "processed_at":    vdata.get("processed_at","—"),
                     }
-                    for vn, vr in sig_results.items() if vr.get("status") == "done"
+            st.session_state[SIG_RESULTS_KEY] = sig_results
+        st.markdown("---")
+
+
+        for bi, batch in enumerate(batches):
+            batch_done = sum(1 for v in batch if sig_results.get(v,{}).get("status") == "done")
+            icon = "✅" if batch_done == len(batch) else ("🔄" if batch_done > 0 else "⬜")
+            with st.expander(f"{icon} Batch {bi+1}  —  {batch_done}/{len(batch)} done  —  {', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"):
+                for vn in batch:
+                    vr = sig_results.get(vn,{})
+                    vs = vr.get("status","pending")
+                    ic = {"done":"✅","error":"❌","processing":"🔄"}.get(vs,"⬜")
+                    if vs == "done":
+                        rag = vr.get("rag",{})
+                        nsig = len(vr.get("signals",{}).get("momentum",[])) + \
+                               len(vr.get("signals",{}).get("investment",[]))
+                        st.caption(f"{ic} {vn}  ·  Overall: {rag.get('overall_rag','')}  ·  "
+                                   f"{nsig} signals  ·  {vr.get('total_chars',0):,} chars")
+                    elif vs == "error":
+                        st.caption(f"{ic} {vn}  ·  Error: {vr.get('error','')[:80]}")
+                    else:
+                        st.caption(f"{ic} {vn}  ·  Not processed")
+
+                st.markdown("")
+                run_batch_btn = st.button(f"▶ Run Batch {bi+1}", key=f"run_sig_batch_{bi}")
+                should_run = run_batch_btn or run_all_sig
+
+                if should_run:
+
+                    prog = st.progress(0, text=f"Starting batch {bi+1}...")
+                    for vi, vname in enumerate(batch):
+                        # Skip if already done in this session OR in uploaded existing repo
+                        if sig_results.get(vname,{}).get("status") == "done" or                        vname in st.session_state.get("already_done_ventures", set()):
+                            prog.progress((vi+1)/len(batch), text=f"⚡ Skipping {vname} (already processed)")
+                            continue
+                        prog.progress(vi/len(batch), text=f"Processing {vname} ({vi+1}/{len(batch)})...")
+
+                        row    = get_row(vname)
+                        notes  = cv(row, col_notes, default="")
+                        sprint = cv(row, col_sprint)
+                        pct    = row[col_pct] if (row is not None and col_pct) else None
+                        hub    = cv(row, col_hub)
+                        vp     = cv(row, col_vp) if col_vp else "—"
+
+                        # Load venture files
+                        vfiles  = load_v_files(vname)
+                        fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
+                        tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
+                        sp_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
+                        jr_text = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
+                        others  = [sp_get_text(p) for k,p in vfiles.items() if k.startswith("other_")]
+                        others  = [t for t in others if t]
+
+                        venture_common = extract_venture_from_common(vname, common_text_sig)
+
+                        sources = {
+                            "Notes": notes or "", "Feedback": fb_text,
+                            "Transcript": tr_text, "Sprint Plan": sp_text,
+                            "Growth Journey": jr_text, "Common Docs": venture_common,
+                        }
+                        for idx, ot in enumerate(others):
+                            sources[f"Venture File {idx+1}"] = ot
+
+                        full_text   = "\n\n".join(f"=== {k} ===\n{v}" for k,v in sources.items() if v)
+                        total_chars = len(full_text)
+                        srcs_used   = [k for k,v in sources.items() if v]
+
+                        att  = get_attendance_for_venture(vname, att_data_sig)
+                        att_sessions = att["sessions"] if att else 0
+                        att_dates    = att["dates"]    if att else []
+                        att_summary  = (f"{att_sessions} sessions ({', '.join(att_dates)})"
+                                        if att_sessions else "No attendance data")
+
+                        from processor import extract_signals_from_text, score_rag_from_signals
+                        signals, num_chunks = extract_signals_from_text(client, vname, sprint, full_text)
+
+                        # Surface credit/API errors immediately — do not silently store empty results
+                        api_errors = signals.get("errors", [])
+                        credit_error = any("credit balance" in str(e) or "billing" in str(e).lower()
+                                           for e in api_errors)
+                        if credit_error:
+                            prog.empty()
+                            st.error(f"❌ Anthropic API credit error on venture '{vname}'. "
+                                     f"Top up credits at console.anthropic.com → Plans & Billing, then re-run.")
+                            st.stop()
+
+                        rag = score_rag_from_signals(client, vname, sprint, notes,
+                                                      att_summary, signals, pct)
+
+                        sig_results[vname] = {
+                            "status":        "done",
+                            "venture_name":  vname,
+                            "hub":           hub,
+                            "venture_partner": vp,
+                            "sprint":        sprint,
+                            "rag":           rag,
+                            "signals":       signals,
+                            "total_chars":   total_chars,
+                            "num_chunks":    num_chunks,
+                            "sources_used":  srcs_used,
+                            "att_sessions":  att_sessions,
+                            "att_dates":     att_dates,
+                            "processed_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        }
+                        st.session_state[SIG_RESULTS_KEY] = sig_results
+
+                    prog.progress(1.0, text=f"✅ Batch {bi+1} complete!")
+                    st.rerun()
+
+        # ── download / upload signals repo ─────────────────
+        st.divider()
+        done_count_s = sum(1 for v in sig_results.values() if v.get("status") == "done")
+        st.markdown(f"**{done_count_s}/{len(ventures_list)} ventures processed**")
+
+        if done_count_s > 0:
+            dl_col, up_col = st.columns(2)
+            with dl_col:
+                st.markdown("**💾 Download signals_repository.json**")
+                # Build flat records for repository
+                repo_records = []
+                for vn, vr in sig_results.items():
+                    if vr.get("status") != "done": continue
+                    rag = vr.get("rag",{})
+                    for sig in vr.get("signals",{}).get("momentum",[]):
+                        repo_records.append({
+                            "venture_name":    vn,
+                            "hub":             vr.get("hub","—"),
+                            "venture_partner": vr.get("venture_partner","—"),
+                            "sprint":          vr.get("sprint","—"),
+                            "signal_type":     "Momentum",
+                            "rag":             rag.get("momentum_rag","ZERO"),
+                            "rag_description": rag.get("momentum_reason","—"),
+                            "signal_category": sig.get("type",""),
+                            "evidence":        sig.get("evidence",""),
+                            "source":          sig.get("source",""),
+                            "overall_rag":     rag.get("overall_rag","ZERO"),
+                            "momentum_rag":    rag.get("momentum_rag","ZERO"),
+                            "investment_rag":  rag.get("investment_rag","ZERO"),
+                            "processed_at":    vr.get("processed_at",""),
+                        })
+                    for sig in vr.get("signals",{}).get("investment",[]):
+                        repo_records.append({
+                            "venture_name":    vn,
+                            "hub":             vr.get("hub","—"),
+                            "venture_partner": vr.get("venture_partner","—"),
+                            "sprint":          vr.get("sprint","—"),
+                            "signal_type":     "Self Investment",
+                            "rag":             rag.get("investment_rag","ZERO"),
+                            "rag_description": rag.get("investment_reason","—"),
+                            "signal_category": sig.get("type",""),
+                            "evidence":        sig.get("evidence",""),
+                            "source":          sig.get("source",""),
+                            "overall_rag":     rag.get("overall_rag","ZERO"),
+                            "momentum_rag":    rag.get("momentum_rag","ZERO"),
+                            "investment_rag":  rag.get("investment_rag","ZERO"),
+                            "processed_at":    vr.get("processed_at",""),
+                        })
+                    # Add summary row per venture (no individual signal)
+                    if not vr.get("signals",{}).get("momentum") and \
+                       not vr.get("signals",{}).get("investment"):
+                        repo_records.append({
+                            "venture_name":    vn,
+                            "hub":             vr.get("hub","—"),
+                            "venture_partner": vr.get("venture_partner","—"),
+                            "sprint":          vr.get("sprint","—"),
+                            "signal_type":     "No Signals",
+                            "rag":             rag.get("overall_rag","ZERO"),
+                            "rag_description": "No signals extracted",
+                            "signal_category": "",
+                            "evidence":        "",
+                            "source":          "",
+                            "overall_rag":     rag.get("overall_rag","ZERO"),
+                            "momentum_rag":    rag.get("momentum_rag","ZERO"),
+                            "investment_rag":  rag.get("investment_rag","ZERO"),
+                            "processed_at":    vr.get("processed_at",""),
+                        })
+
+                save_payload = {
+                    "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                    "venture_count": done_count_s,
+                    "records":       repo_records,
+                    "venture_summary": {
+                        vn: {
+                            "venture_name":    vn,
+                            "hub":             vr.get("hub","—"),
+                            "venture_partner": vr.get("venture_partner","—"),
+                            "sprint":          vr.get("sprint","—"),
+                            "overall_rag":     vr.get("rag",{}).get("overall_rag","ZERO"),
+                            "momentum_rag":    vr.get("rag",{}).get("momentum_rag","ZERO"),
+                            "investment_rag":  vr.get("rag",{}).get("investment_rag","ZERO"),
+                            "momentum_reason": vr.get("rag",{}).get("momentum_reason","—"),
+                            "investment_reason":vr.get("rag",{}).get("investment_reason","—"),
+                            "momentum_score":  vr.get("rag",{}).get("momentum_score",0),
+                            "investment_score":vr.get("rag",{}).get("investment_score",0),
+                            "signals":         vr.get("signals",{}),
+                            "att_sessions":    vr.get("att_sessions",0),
+                            "att_dates":       vr.get("att_dates",[]),
+                            "sources_used":    vr.get("sources_used",[]),
+                            "processed_at":    vr.get("processed_at",""),
+                        }
+                        for vn, vr in sig_results.items() if vr.get("status") == "done"
+                    }
                 }
-            }
-            st.download_button(
-                "⬇️ Download signals_repository.json",
-                data=json.dumps(save_payload, indent=2, default=str),
-                file_name="signals_repository.json",
-                mime="application/json",
-            )
-            st.caption(f"Upload this file to SharePoint at:\n`{SIGNALS_REPO_PATH}`")
+                st.download_button(
+                    "⬇️ Download signals_repository.json",
+                    data=json.dumps(save_payload, indent=2, default=str),
+                    file_name="signals_repository.json",
+                    mime="application/json",
+                )
+                st.caption(f"Upload this file to SharePoint at:\n`{SIGNALS_REPO_PATH}`")
 
 # ══════════════════════════════════════════════════════
 #  STEP 2: FEEDBACK REPOSITORY
