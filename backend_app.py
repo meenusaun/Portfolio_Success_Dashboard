@@ -1252,7 +1252,7 @@ with step3_tab:
     # ── Debug: show ALL paths in common_text_sig to diagnose missing folders ──
     with st.expander("🔍 Debug — All paths loaded in Common Documents (Step 0)"):
         all_paths = []
-        for section in st.session_state["common_text_sig"].split("=== FILE:"):
+        for section in []:  # file index approach — no pre-loaded text available; use SP paths instead
             if not section.strip(): continue
             header_end = section.find("===")
             if header_end == -1: continue
@@ -1495,7 +1495,7 @@ with step4_tab:
     st.caption(f"{len(p_target)} ventures · {len(p_batches)} batches")
     st.divider()
 
-    common_text_p = st.session_state["common_text_sig"]
+    common_text_p = ""  # not used — on-demand reading via _read_venture_files_from_index
 
     for bi, batch in enumerate(p_batches):
         batch_done = sum(1 for v in batch
