@@ -1156,7 +1156,22 @@ Return [] ONLY if this chunk contains zero session content. No markdown fences.
 
 def extract_call_intelligence(client, vname, sprint,
                                transcript_text, feedback_text,
-                               sprint_plan_text, journey_text):
+                               sprint_plan_text, journey_text,
+                               file_paths=None):
+    """
+    file_paths: dict of {file_type: {"sp_path": str, "filename": str}}
+    e.g. {
+      "transcript":  {"sp_path": "04. Advisors/.../Agro/Transcript_Mar.docx",
+                      "filename": "Transcript_Mar.docx"},
+      "feedback":    {"sp_path": "...", "filename": "..."},
+      "sprint":      {"sp_path": "...", "filename": "..."},
+      "journey":     {"sp_path": "...", "filename": "..."},
+      "other_0":     {"sp_path": "...", "filename": "..."},
+      "common_transcript_0": {"sp_path": "...", "filename": "..."},
+    }
+    Stored in every call record so frontend can show file reference
+    without any SharePoint API call at render time.
+    """
     """
     Extract structured call intelligence records from ALL document sources
     for a venture. Documents are pre-merged by the caller into transcript_text.
@@ -1288,6 +1303,8 @@ No markdown. Null for any missing field.
             "session_date":             "Not Available",
             "call_type":                "Not Available",
             "source_document":          "No session documents found",
+            "source_sp_path":           "Not Available",
+            "source_folder":            "Not Available",
             "call_objective":           "Not Available",
             "discussion_topics":        [],
             "company_updates":          "Not Available",
@@ -1298,7 +1315,11 @@ No markdown. Null for any missing field.
             "venture_feedback_rating":  feedback_rating,
             "venture_feedback_text":    feedback_summary,
             "sprint_gaps_context":      sprint_gaps_context,
-            "sources_used":             ["Feedback", "Sprint Plan", "Journey Doc"],
+            "sources_used":             [
+                finfo.get("filename", ftype)
+                for ftype, finfo in (file_paths or {}).items()
+                if finfo.get("filename")
+            ] or ["Feedback", "Sprint Plan", "Journey Doc"],
         }]
 
     # ── Step 4: Extract calls from transcript (chunked) ──
@@ -1367,6 +1388,44 @@ No markdown. Null for any missing field.
                     continue
                 seen_keys.add(dedup_key)
 
+                # ── Match source_document to a known SP file path ──────
+                # source_document is the filename Claude extracted from text
+                # We match it against file_paths to get the full SP path
+                src_doc  = call.get("source_document", "Not Available")
+                sp_path  = "Not Available"
+                sp_fname = src_doc if src_doc not in ["Not Available", "", None] else "Not Available"
+
+                if file_paths:
+                    # Try exact filename match first
+                    for ftype, finfo in file_paths.items():
+                        finfo_name = finfo.get("filename","")
+                        if (finfo_name and src_doc != "Not Available"
+                                and finfo_name.lower() in src_doc.lower()):
+                            sp_path  = finfo.get("sp_path","Not Available")
+                            sp_fname = finfo_name
+                            break
+
+                    # Fallback: match by call type → file type
+                    if sp_path == "Not Available":
+                        ctype = call.get("call_type","")
+                        type_to_ftype = {
+                            "Sprint call":          "transcript",
+                            "Panel call":           "transcript",
+                            "VP call":              "transcript",
+                            "Mid-sprint VP review": "journey",
+                        }
+                        fallback_ftype = type_to_ftype.get(ctype, "transcript")
+                        if fallback_ftype in file_paths:
+                            sp_path  = file_paths[fallback_ftype].get("sp_path","Not Available")
+                            sp_fname = file_paths[fallback_ftype].get("filename","Not Available")
+                        elif "transcript" in file_paths:
+                            sp_path  = file_paths["transcript"].get("sp_path","Not Available")
+                            sp_fname = file_paths["transcript"].get("filename","Not Available")
+
+                call["source_document"] = sp_fname
+                call["source_sp_path"]  = sp_path   # full SharePoint path
+                call["source_folder"]   = "/".join(sp_path.split("/")[:-1]) if sp_path != "Not Available" else "Not Available"
+
                 # Enrich with feedback file data and context
                 call["venture_name"]            = vname
                 call["venture_feedback_rating"] = (
@@ -1383,15 +1442,12 @@ No markdown. Null for any missing field.
                 if not call.get("source_document"):
                     call["source_document"] = "Not Available"
 
-                # sources_used — list of all document types passed in
+                # sources_used — actual filenames of all docs passed in
                 call["sources_used"] = [
-                    "Transcript",
-                    "Common Docs (Transcripts folder)",
-                    "Other venture docs",
-                    "Feedback",
-                    "Sprint Plan",
-                    "Journey Doc",
-                ]
+                    finfo.get("filename", ftype)
+                    for ftype, finfo in (file_paths or {}).items()
+                    if finfo.get("filename")
+                ] or ["Transcript", "Feedback", "Sprint Plan", "Journey Doc"]
 
                 # Ensure all 7 fields exist with defaults
                 for field in ["call_objective", "company_updates",
@@ -1416,6 +1472,9 @@ No markdown. Null for any missing field.
             "expert_role":              "Not Available",
             "session_date":             "Not Available",
             "call_type":                "Not Available",
+            "source_document":          "Could not parse — check source files",
+            "source_sp_path":           file_paths.get("transcript",{}).get("sp_path","Not Available") if file_paths else "Not Available",
+            "source_folder":            "/".join(file_paths.get("transcript",{}).get("sp_path","").split("/")[:-1]) if file_paths else "Not Available",
             "call_objective":           "Could not parse call data from transcript",
             "discussion_topics":        [],
             "company_updates":          "Not Available",
@@ -1426,7 +1485,7 @@ No markdown. Null for any missing field.
             "venture_feedback_rating":  feedback_rating,
             "venture_feedback_text":    feedback_summary,
             "sprint_gaps_context":      sprint_gaps_context,
-            "sources_used":             ["Transcript", "Feedback", "Sprint Plan", "Journey Doc"],
+            "sources_used":             [finfo.get("filename",ft) for ft,finfo in (file_paths or {}).items() if finfo.get("filename")] or ["Transcript","Feedback","Sprint Plan","Journey Doc"],
         })
 
     return all_calls

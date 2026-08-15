@@ -429,14 +429,19 @@ def extract_transcripts_from_common(common_text):
             })
     return results
 
-def get_transcript_for_venture(vname, all_transcripts):
+def get_transcript_for_venture(vname, all_transcripts, return_entries=False):
     """
     Find transcript entries matching a venture name.
     all_transcripts is the list returned by extract_transcripts_from_common().
-    Matches by filename or first 2000 chars of content.
+    Matches by filename, SP path, or first 3000 chars of content.
+
+    return_entries=False (default): returns combined text string
+    return_entries=True:            returns list of matching entry dicts
+                                    [{filename, path, text}, ...]
     """
-    matched = []
-    vname_lower = vname.lower()
+    matched         = []
+    matched_entries = []
+    vname_lower     = vname.lower()
     # Words longer than 3 chars — skip common words
     skip = {"and","the","pvt","ltd","llp","inc","for","with","from","that"}
     vwords = [w for w in vname_lower.split() if len(w) > 3 and w not in skip]
@@ -453,14 +458,12 @@ def get_transcript_for_venture(vname, all_transcripts):
         )
 
         # Match 2: venture name anywhere in the full SP path
-        # (covers cases where transcript is in a sub-folder named after venture)
         path_match = (
             vname_lower in fpath_lower
             or any(w in fpath_lower for w in vwords)
         )
 
         # Match 3: venture name appears in first 3000 chars of the content
-        # (most transcripts mention the venture name in the header/intro)
         text_match = (
             vname_lower in text_lower[:3000]
             or any(w in text_lower[:3000] for w in vwords if len(w) > 5)
@@ -468,7 +471,10 @@ def get_transcript_for_venture(vname, all_transcripts):
 
         if fname_match or path_match or text_match:
             matched.append(entry["text"])
+            matched_entries.append(entry)
 
+    if return_entries:
+        return matched_entries
     return "\n\n".join(matched) if matched else ""
 
 # ── attendance ─────────────────────────────────────────
@@ -1693,17 +1699,67 @@ with step5_tab:
                     hub    = cv(row, col_hub)
                     vp     = cv(row, col_vp) if col_vp else "—"
 
-                    # Load venture files
+                    # ── Load venture folder files ────────────────────
                     vfiles      = load_v_files(vname)
                     fb_text     = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                     tr_text     = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
                     sprint_text = sp_get_text(vfiles["sprint"])     if "sprint"     in vfiles else ""
                     jour_text   = sp_get_text(vfiles["journey"])    if "journey"    in vfiles else ""
 
-                    # Merge transcript from venture folder + Session Transcripts common folder
+                    # ── Build file_paths dict — stored in every call record ──
+                    # Maps file type → {sp_path, filename} so frontend can
+                    # show the exact SharePoint file reference without any API call
+                    file_paths = {}
+                    for ftype, fpath in vfiles.items():
+                        file_paths[ftype] = {
+                            "sp_path":  fpath,
+                            "filename": fpath.split("/")[-1],
+                            "folder":   "/".join(fpath.split("/")[:-1]),
+                        }
+
+                    # ── Other files in venture folder ─────────────────
+                    # VP call reports, panel call notes, mid-sprint review docs,
+                    # WhatsApp exports, email threads
+                    other_docs = []
+                    for k, fpath in vfiles.items():
+                        if k.startswith("other_"):
+                            txt = sp_get_text(fpath)
+                            if txt:
+                                fname_other = fpath.split("/")[-1]
+                                other_docs.append(
+                                    f"=== SOURCE: {fname_other} ===\n{txt}"
+                                )
+                    other_text = "\n\n".join(other_docs)
+
+                    # ── Common Documents — venture-specific mentions ──
+                    venture_common_text = extract_venture_from_common(
+                        vname, common_text_ci
+                    )
+
+                    # ── Transcripts from Transcripts folder ──────────
                     all_transcripts = extract_transcripts_from_common(common_text_ci)
-                    common_tr = get_transcript_for_venture(vname, all_transcripts)
-                    combined_tr = "\n\n".join(t for t in [tr_text, common_tr] if t)
+                    matched_transcripts = get_transcript_for_venture(
+                        vname, all_transcripts, return_entries=True
+                    )
+                    # Add common transcript file paths to file_paths dict
+                    for ti, entry in enumerate(matched_transcripts):
+                        fk = f"common_transcript_{ti}"
+                        file_paths[fk] = {
+                            "sp_path":  entry.get("path", "Not Available"),
+                            "filename": entry.get("filename", "Not Available"),
+                            "folder":   "/".join(
+                                entry.get("path","").split("/")[:-1]
+                            ),
+                        }
+                    common_tr = "\n\n".join(e["text"] for e in matched_transcripts if e.get("text"))
+
+                    # ── Combine all transcript-type sources ───────────
+                    combined_tr = "\n\n".join(t for t in [
+                        tr_text,
+                        common_tr,
+                        other_text,
+                        venture_common_text,
+                    ] if t)
 
                     try:
                         from processor import extract_call_intelligence
@@ -1715,13 +1771,36 @@ with step5_tab:
                             feedback_text    = fb_text,
                             sprint_plan_text = sprint_text,
                             journey_text     = jour_text,
+                            file_paths       = file_paths,
                         )
+                        # Build venture-level file_references block
+                        # Lovable reads this to show file names + SP paths
+                        # without any API call — just plain JSON fields
+                        file_refs = {}
+                        for ftype, finfo in file_paths.items():
+                            fname = finfo.get("filename","")
+                            fpath = finfo.get("sp_path","")
+                            folder= finfo.get("folder","")
+                            if fname and fname != "Not Available":
+                                file_refs[ftype] = {
+                                    "filename":    fname,
+                                    "sp_path":     fpath,
+                                    "folder":      folder,
+                                    "sp_base_url": (
+                                        "https://wadhwanifoundation-my.sharepoint.com"
+                                        f"/personal/meenakshi_singh_wadhwanifoundation_org"
+                                        f"/_layouts/15/Doc.aspx?sourcedoc="
+                                        if fpath != "Not Available" else ""
+                                    ),
+                                }
+
                         ci_results[vname] = {
                             "status":          "done",
                             "venture_name":    vname,
                             "hub":             hub,
                             "venture_partner": vp,
                             "sprint":          sprint,
+                            "file_references": file_refs,
                             "calls":           calls,
                             "processed_at":    datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
                         }

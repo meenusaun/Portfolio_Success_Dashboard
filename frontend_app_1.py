@@ -605,93 +605,99 @@ def find_col(df, patterns):
             if p.lower() in str(c).lower(): return c
     return None
 
-# ── SharePoint direct download link (works in sandboxed iframes) ──────────
-def sp_download_link(file_path, label="⬇️ Download", sp=None, style=""):
+# ── Source file reference chip ────────────────────────────────────────────
+# Instead of downloading files, show a reference chip telling the user
+# which file to look at in SharePoint. No download, no blob, no SP API call.
+
+CALL_TYPE_FILE_HINT = {
+    "Sprint call":          "Transcript file in venture folder",
+    "Panel call":           "Panel call transcript / notes in venture folder",
+    "VP call":              "VP call transcript / notes in venture folder",
+    "Mid-sprint VP review": "Mid-sprint VP report in venture folder",
+    "WhatsApp / Email":     "WhatsApp export or email thread in venture folder",
+    "Other":                "Session document in venture folder",
+}
+
+SP_FOLDER_DISPLAY = "SharePoint › 04. Advisors › 2026 › Portfolio Success Dashboard"
+
+def source_file_ref(source_document=None, call_type=None,
+                    vname=None, extra_note=None,
+                    sp_path=None, folder=None):
     """
-    Return an HTML anchor that opens a SharePoint file directly in a new tab.
-    Uses @microsoft.graph.downloadUrl — a short-lived pre-authenticated HTTPS
-    link that works in Lovable's sandboxed iframe without any blob API.
+    Render a compact file-reference chip showing the user exactly which
+    file to look at in SharePoint. No download — just a clear reference.
 
-    Falls back gracefully if sp_reader is not available or file not found.
-    style: optional extra CSS for the anchor tag.
+    source_document: filename (e.g. "Agro_Transcript_Mar.docx")
+    sp_path:         full SharePoint path stored in call record by backend
+    folder:          folder path stored in call record by backend
+    call_type:       used to derive a descriptive hint if filename unavailable
+    vname:           venture name — used as fallback folder context
+    extra_note:      optional extra line below the chip
     """
-    if not sp:
-        return (
-            f"<span style='color:#94a3b8;font-size:0.82rem'>{label} (no SP connection)</span>"
-        )
-    try:
-        url = sp.get_download_url(file_path)
-        base_style = (
-            "background:#4f46e5;color:#fff;padding:5px 13px;"
-            "border-radius:8px;font-size:0.80rem;text-decoration:none;"
-            "font-weight:500;display:inline-block;margin-top:6px;"
-        )
-        return (
-            f"<a href='{url}' target='_blank' rel='noopener noreferrer' "
-            f"style='{base_style}{style}'>{label}</a>"
-        )
-    except Exception:
-        return (
-            f"<span style='color:#94a3b8;font-size:0.82rem'>"
-            f"{label} (file not found)</span>"
+    icon  = "📄"
+    fname = source_document if (
+        source_document and source_document not in
+        ["Not Available", "—", "", "No session documents found"]
+    ) else None
+
+    hint = CALL_TYPE_FILE_HINT.get(call_type, "Session document in venture folder")
+
+    # Prefer the SP path stored by backend; fall back to display hint
+    if sp_path and sp_path not in ["Not Available", "—", ""]:
+        folder_display = sp_path          # full path e.g. "04. Advisors/2026/.../vname/file.docx"
+    elif folder and folder not in ["Not Available", "—", ""]:
+        folder_display = folder           # folder without filename
+    else:
+        folder_display = (
+            f"{SP_FOLDER_DISPLAY} › {vname}" if vname else SP_FOLDER_DISPLAY
         )
 
-def sp_download_link_safe(file_path, label="⬇️ Download", sp=None):
-    """Like sp_download_link but never raises — always returns HTML string."""
-    try:
-        return sp_download_link(file_path, label=label, sp=sp)
-    except Exception:
-        return f"<span style='color:#94a3b8;font-size:0.82rem'>{label} (unavailable)</span>"
+    label   = fname if fname else hint
 
+    extra_html = (
+        f"<div style='font-size:10px;color:#94a3b8;margin-top:2px'>{extra_note}</div>"
+        if extra_note else ""
+    )
 
-def sp_call_document_link(vname, call_type, call_intel_repo=None,
-                           sp=None, label=None):
+    return (
+        f"<div style='display:inline-flex;flex-direction:column;"
+        f"margin-top:6px;max-width:100%'>"
+        f"<div style='display:inline-flex;align-items:center;gap:5px;"
+        f"background:#f1f5f9;border:.5px solid #e2e8f0;border-radius:6px;"
+        f"padding:4px 10px;font-size:11px;color:#475569' "
+        f"title='SharePoint: {folder_display}'>"
+        f"<span>{icon}</span>"
+        f"<span style='font-weight:500'>{label}</span>"
+        f"</div>"
+        f"<div style='font-size:10px;color:#94a3b8;margin-top:2px;"
+        f"padding-left:2px'>📁 {folder_display}</div>"
+        f"{extra_html}"
+        f"</div>"
+    )
+
+def source_file_ref_for_call(call, vname=None):
     """
-    Build a SharePoint download link for the source document of a call.
+    Convenience wrapper — extract all file reference fields from a
+    call intelligence record and render the file reference chip.
 
-    Strategy:
-    1. Check if call_intel_repo has a stored file_path for this venture/call.
-    2. Fall back to scanning venture folder for a file matching the call type keyword.
-    3. Return HTML anchor or a greyed-out placeholder.
-
-    call_type: "Sprint call" | "Panel call" | "VP call" | "Mid-sprint VP review"
+    Reads source_document, source_sp_path, source_folder from the
+    call record — these are stored by the backend during Step 5.
     """
-    if not sp:
-        return ""
+    return source_file_ref(
+        source_document = call.get("source_document"),
+        call_type       = call.get("call_type"),
+        vname           = vname or call.get("venture_name"),
+        sp_path         = call.get("source_sp_path"),
+        folder          = call.get("source_folder"),
+    )
 
-    # Default label based on call type
-    if not label:
-        if call_type in ("Sprint call",):
-            label = "⬇️ Transcript"
-        elif call_type == "Mid-sprint VP review":
-            label = "⬇️ VP report"
-        elif call_type in ("VP call", "Panel call"):
-            label = "⬇️ Call report"
-        else:
-            label = "⬇️ Document"
+# Keep sp_download_link and sp_call_document_link as no-ops for
+# any remaining references that haven't been updated yet
+def sp_download_link(file_path, label="Document", sp=None, style=""):
+    return source_file_ref(source_document=file_path.split("/")[-1] if file_path else None)
 
-    # Keyword to match filename
-    keyword_map = {
-        "Sprint call":         "transcript",
-        "Panel call":          "transcript",
-        "VP call":             "transcript",
-        "Mid-sprint VP review":"vp report",
-    }
-    keyword = keyword_map.get(call_type, "transcript")
-
-    # Try venture folder scan
-    try:
-        folder = f"{SP_FOLDER}/{vname}"
-        items  = sp.list_files(folder)
-        for fname in items:
-            if keyword.lower() in fname.lower():
-                return sp_download_link(
-                    f"{folder}/{fname}", label=label, sp=sp
-                )
-    except Exception:
-        pass
-
-    return f"<span style='color:#94a3b8;font-size:0.82rem'>{label} (not found)</span>"
+def sp_call_document_link(vname, call_type, call_intel_repo=None, sp=None, label=None):
+    return source_file_ref(call_type=call_type, vname=vname)
 
 
     try:
@@ -2528,12 +2534,11 @@ with tab_ventures:
                                 unsafe_allow_html=True
                             )
 
-                        # SharePoint document download link
-                        dl_html = sp_call_document_link(
-                            vname, call_type, sp=sp_reader
+                        # Source file reference
+                        st.markdown(
+                            source_file_ref_for_call(call, vname=vname),
+                            unsafe_allow_html=True
                         )
-                        if dl_html:
-                            st.markdown(dl_html, unsafe_allow_html=True)
 
                         if ci < len(ci_calls) - 1:
                             st.markdown("<br>", unsafe_allow_html=True)
@@ -2962,9 +2967,8 @@ with tab_mentors:
                         <td style='padding:8px 12px;text-align:center'>{rating_str}</td>
                         <td style='padding:8px 12px;text-align:center'>{followup_str}</td>
                         <td style='padding:8px 12px;max-width:140px'>{mentor_cell}</td>
-                        <td style='padding:8px 12px;white-space:nowrap'>{
-                            sp_call_document_link(venture, stype, sp=sp_reader,
-                                label="⬇️ Doc")
+                        <td style='padding:8px 12px' title='Find this file in SharePoint'>{
+                            source_file_ref(call_type=stype, vname=venture)
                         }</td>
                     </tr>"""
 
@@ -2982,7 +2986,7 @@ with tab_mentors:
                         <th style='padding:8px 12px;text-align:center;color:#475569;font-weight:600'>Rating</th>
                         <th style='padding:8px 12px;text-align:center;color:#475569;font-weight:600'>Follow-up</th>
                         <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Mentor View</th>
-                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Document</th>
+                        <th style='padding:8px 12px;text-align:left;color:#475569;font-weight:600'>Source file</th>
                     </tr></thead>
                     <tbody>{rows_html}</tbody>
                 </table></div>""", unsafe_allow_html=True)
@@ -3508,10 +3512,11 @@ with tab_call_intel:
                             unsafe_allow_html=True
                         )
 
-                    # SharePoint document download link
-                    dl_html = sp_call_document_link(vn, call_type, sp=sp_reader)
-                    if dl_html:
-                        st.markdown(dl_html, unsafe_allow_html=True)
+                    # Source file reference
+                    st.markdown(
+                        source_file_ref_for_call(call, vname=vn),
+                        unsafe_allow_html=True
+                    )
 
                     # Sprint gaps context
                     gaps_ctx = call.get("sprint_gaps_context","")
