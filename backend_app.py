@@ -722,8 +722,11 @@ with step1_tab:
                                 _ftype = "transcript" if any(
                                     v in folder_path.lower() for v in TRANSCRIPT_FOLDER_VARIANTS
                                 ) else (
+                                    "journey"    if any(m in folder_path.lower() for m in [
+                                                     "sign off journey", "journey documents",
+                                                     "js1", "js2"
+                                                 ]) or "journey" in iname.lower() else
                                     "feedback"   if "feedback"   in iname.lower() else
-                                    "journey"    if "journey"    in iname.lower() else
                                     "sprint"     if "sprint"     in iname.lower() else
                                     "attendance" if "attendance" in iname.lower() else
                                     "other"
@@ -1351,13 +1354,36 @@ with step3_tab:
     # Journey docs: find paths from index, load text on demand
     def build_journey_index_lookup():
         index, _ = _retrieve_file_index()
-        JOURNEY_MARKERS = ["sign off journey","journey documents","js1","js2","growth journey","journey report"]
         lookup = {}
-        for fpath, ftype in index.items():
-            if any(m in fpath.lower() for m in JOURNEY_MARKERS):
-                lookup[fpath.split("/")[-1]] = {"path": fpath, "text": None}
+        JOURNEY_FOLDER_MARKERS = [
+            "sign off journey", "journey documents",
+            "js1", "js2", "growth journey", "journey report"
+        ]
+        for fpath, fmeta in index.items():
+            # fmeta is a dict {type, modified, size}
+            ftype = fmeta["type"] if isinstance(fmeta, dict) else fmeta
+            fpath_lower = fpath.lower()
+            fname = fpath.split("/")[-1]
+            # Match by file type OR by folder/filename keywords
+            is_journey = (
+                ftype == "journey"
+                or any(m in fpath_lower for m in JOURNEY_FOLDER_MARKERS)
+                or any(m in fname.lower() for m in [
+                    "growth journey", "journey report", "sign off", "journey doc"
+                ])
+            )
+            if is_journey:
+                lookup[fname] = {"path": fpath, "text": None}
         return lookup
     journey_docs = build_journey_index_lookup()
+
+    if not journey_docs:
+        st.warning(
+            "⚠️ No journey documents found in file index. "
+            "Make sure the file index was built (Step 0) and that journey "
+            "documents exist in Common Documents or venture folders. "
+            f"Index has {len(_retrieve_file_index()[0])} files total."
+        )
 
     # ── Debug: show ALL paths in common_text_sig to diagnose missing folders ──
     with st.expander("🔍 Debug — All paths loaded in Common Documents (Step 0)"):
