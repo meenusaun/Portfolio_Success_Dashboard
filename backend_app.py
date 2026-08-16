@@ -782,6 +782,25 @@ with step1_tab:
                 "Takes 10-30 seconds. File content is downloaded per venture during batch runs."
             )
             if st.button("📂 Build File Index", key="preload_btn"):
+                # ── Immediate diagnostic — show paths before any scanning ──
+                local_common_path = local_path(COMMON_FOLDER)
+                st.markdown("**🔍 Path diagnostic:**")
+                st.code(
+                    f"SP_FOLDER:    {SP_FOLDER}\n"
+                    f"COMMON_FOLDER (SP):   {COMMON_FOLDER}\n"
+                    f"LOCAL_ROOT:   {LOCAL_ROOT}\n"
+                    f"LOCAL_COMMON (resolved): {local_common_path}\n"
+                    f"LOCAL folder exists: {os.path.isdir(local_common_path)}"
+                )
+                if not os.path.isdir(local_common_path):
+                    st.error(
+                        f"❌ Local folder not found: `{local_common_path}`\n\n"
+                        f"Check that:\n"
+                        f"1. OneDrive is synced on this machine\n"
+                        f"2. The path in LOCAL_BASE is exactly correct\n"
+                        f"3. The folder exists at that path"
+                    )
+                    st.stop()
                 status_box = st.empty()
                 prog_pre   = st.progress(0, text="Scanning folders...")
                 file_index  = {}
