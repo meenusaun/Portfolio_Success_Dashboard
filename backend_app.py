@@ -34,6 +34,70 @@ COMMON_FOLDER    = f"{SP_FOLDER}/Common Documents"
 TRANSCRIPT_FOLDER= f"{COMMON_FOLDER}/Transcripts (Accelerate Mentor Meetings)"
 REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 
+# ── Local folder (OneDrive sync) ───────────────────────────────────────────
+# Files are read from local OneDrive folder instead of downloading from SP.
+# Structure mirrors SharePoint exactly — same folder names and hierarchy.
+# Set USE_LOCAL_FOLDER = True to read locally; False to download from SP.
+
+LOCAL_BASE = (
+    r"C:\Users\MeenakshiSingh\OneDrive - National Entrepreneurship Network"
+)
+LOCAL_ROOT      = os.path.join(LOCAL_BASE, "04. Advisors", "2026",
+                               "Portfolio Success Dashboard")
+LOCAL_COMMON    = os.path.join(LOCAL_ROOT, "Common Documents")
+USE_LOCAL_FOLDER = True   # ← set False to use SharePoint downloads instead
+
+def local_path(sp_path: str) -> str:
+    """
+    Convert a SharePoint relative path to an absolute local OneDrive path.
+    SP path:    '04. Advisors/2026/Portfolio Success Dashboard/Agro/file.docx'
+    Local path: 'C:/Users/.../04. Advisors/2026/.../Agro/file.docx'
+    """
+    # SP paths use forward slashes; local uses OS separator
+    rel = sp_path.replace("\\", "/")
+    # Strip the SP_FOLDER prefix if present
+    prefix = SP_FOLDER.replace("\\", "/")
+    if rel.startswith(prefix):
+        rel = rel[len(prefix):].lstrip("/")
+    parts = rel.split("/")
+    return os.path.join(LOCAL_ROOT, *parts)
+
+def read_local_file(sp_path: str) -> bytes:
+    """Read a file from local OneDrive folder. Returns bytes like SP download."""
+    lpath = local_path(sp_path)
+    if not os.path.exists(lpath):
+        raise FileNotFoundError(f"Local file not found: {lpath}")
+    with open(lpath, "rb") as f:
+        return f.read()
+
+def local_list_folder(local_folder: str):
+    """
+    List a local folder and return items in the same format as
+    sp_reader.list_folder() — list of dicts with 'name', 'folder'/'file' keys
+    and 'lastModifiedDateTime' from the file system mtime.
+    """
+    items = []
+    try:
+        for entry in os.scandir(local_folder):
+            stat = entry.stat()
+            mtime = datetime.utcfromtimestamp(stat.st_mtime).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            item = {
+                "name": entry.name,
+                "size": stat.st_size if entry.is_file() else 0,
+                "lastModifiedDateTime": mtime,
+            }
+            if entry.is_dir():
+                item["folder"] = {}
+            else:
+                item["file"] = {}
+            items.append(item)
+    except Exception:
+        pass
+    return items
+
+
 EXTRA_SCAN_FOLDERS = [
     f"{SP_FOLDER}/Transcripts",
     f"{SP_FOLDER}/Session Transcripts",
@@ -191,14 +255,23 @@ def extract_text_bytes(content_bytes, filename):
     return ""
 
 def sp_get_text(fpath):
-    if sp_reader:
-        try:
+    """Download and extract text from a file — local first, SP fallback."""
+    try:
+        if USE_LOCAL_FOLDER:
+            content = read_local_file(fpath)
+        elif sp_reader:
             content = sp_reader.download_file(fpath)
-            return extract_text_bytes(content, Path(fpath).name)
-        except: return ""
-    return ""
+        else:
+            return ""
+        return extract_text_bytes(content, Path(fpath).name)
+    except Exception:
+        return ""
 
 def sp_list(folder):
+    """List a folder — local first, SP fallback."""
+    if USE_LOCAL_FOLDER:
+        lpath = local_path(folder)
+        return local_list_folder(lpath)
     if sp_reader:
         try: return sp_reader.list_folder(folder)
         except: return []
@@ -271,26 +344,51 @@ st.success(f"✅ Dashboard loaded — {len(ventures_list)} ventures found")
 
 # ── load venture files ─────────────────────────────────
 def load_v_files(vname):
-    files = {}
-    VALID_EXT = [".xlsx",".xls",".docx",".pdf",".pptx",".ppt",".txt"]
-    if use_sp and sp_reader:
-        folder = f"{SP_FOLDER}/{vname}"
+    """
+    List and classify files in a venture folder.
+    Uses local OneDrive folder when USE_LOCAL_FOLDER=True,
+    otherwise reads from SharePoint.
+    Returns {type_key: sp_path} — sp_path used as consistent key throughout.
+    """
+    files     = {}
+    VALID_EXT = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt",".txt"}
+    folder_sp = f"{SP_FOLDER}/{vname}"
+
+    # Get file listing — local or SP
+    if USE_LOCAL_FOLDER:
+        items_raw = local_list_folder(local_path(folder_sp))
+        items = [
+            i["name"] for i in items_raw
+            if "file" in i and Path(i["name"]).suffix.lower() in VALID_EXT
+        ]
+    else:
         try:
-            items = sp_reader.list_files(folder)
-            for fname in items:
-                fl  = fname.lower()
-                fp  = f"{folder}/{fname}"
-                ext = Path(fname).suffix.lower()
-                if ext not in VALID_EXT: continue
-                if "transcript"   in fl: files["transcript"] = fp
-                elif "feedback"   in fl: files["feedback"]   = fp
-                elif "growth sprint" in fl or "sprint plan" in fl: files["sprint"] = fp
-                elif "growth journey" in fl or "journey report" in fl: files["journey"] = fp
-                else:
-                    key = f"other_{len([k for k in files if k.startswith('other')])}"
-                    files[key] = fp
-        except: pass
+            items = sp_reader.list_files(folder_sp) if sp_reader else []
+        except Exception:
+            items = []
+
+    for fname in items:
+        fl  = fname.lower()
+        fp  = f"{folder_sp}/{fname}"
+        ext = Path(fname).suffix.lower()
+        if ext not in VALID_EXT: continue
+        if any(kw in fl for kw in ["transcript","session","meeting","mentor","call","minutes"]):
+            # Multiple transcript files → transcript_0, transcript_1, ...
+            n   = len([k for k in files if k.startswith("transcript")])
+            key = "transcript" if n == 0 else f"transcript_{n}"
+            files[key] = fp
+        elif "feedback" in fl:
+            files["feedback"] = fp
+        elif "growth sprint" in fl or "sprint plan" in fl:
+            files["sprint"] = fp
+        elif "growth journey" in fl or "journey report" in fl or "sign off" in fl:
+            files["journey"] = fp
+        else:
+            n   = len([k for k in files if k.startswith("other")])
+            files[f"other_{n}"] = fp
+
     return files
+
 
 # ── load common docs ───────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=600)
@@ -478,7 +576,12 @@ def _read_venture_files_from_index(vname, sp):
                 continue
 
         try:
-            cb   = sp.download_file(fpath)
+            if USE_LOCAL_FOLDER:
+                cb = read_local_file(fpath)
+            else:
+                cb = sp_reader.download_file(fpath) if sp_reader else None
+            if not cb:
+                continue
             text = extract_text_bytes(cb, fname)
             if text and len(text) >= 50:
                 parts.append(f"=== SOURCE: {fpath} ===\n{text}")
@@ -599,11 +702,12 @@ def get_attendance_for_venture(vname, attendance_data):
 #  MAIN UI — Two generation steps
 # ══════════════════════════════════════════════════════
 
-step1_tab, step2_tab, step3_tab, step4_tab, status_tab = st.tabs([
+step1_tab, step2_tab, step3_tab, step4_tab, step5_tab, status_tab = st.tabs([
     "📊 Step 1 — Signals Repository",
     "🎙 Step 2 — Feedback Repository",
     "📄 Step 3 — Journey Documents",
     "👷 Step 4 — People Hired",
+    "📞 Step 5 — Call Intelligence",
     "📁 Status & Downloads"
 ])
 
@@ -685,83 +789,86 @@ with step1_tab:
                 fi          = [0]
                 VALID_EXT   = {".xlsx",".xls",".docx",".pdf",".pptx",".ppt"}
 
-                if use_sp and ENV_CLIENT_ID:
+                venture_folder_names = set(
+                    v.strip().lower() for v in ventures_list if v.strip()
+                )
+
+                # SP reader — only needed when not using local folder
+                sp_pre = None
+                if not USE_LOCAL_FOLDER and ENV_CLIENT_ID:
                     try:
                         from sharepoint_reader import SharePointReader
                         sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
-
-                        # Venture folder names — excluded from index (handled by load_v_files)
-                        venture_folder_names = set(
-                            v.strip().lower() for v in ventures_list if v.strip()
-                        )
-
-                        def index_folder(folder_path, depth=0):
-                            try:
-                                items = sp_pre.list_folder(folder_path)
-                            except Exception:
-                                return
-                            sub_folders = [i for i in items if "folder" in i]
-                            files_here  = [i for i in items if "file"   in i]
-                            folder_name = folder_path.split("/")[-1]
-                            # Skip venture-named sub-folders — handled by load_v_files()
-                            if depth > 0 and folder_name.lower() in venture_folder_names:
-                                return
-                            folder_list.append("  " * depth + "📁 " + folder_name
-                                               + " (" + str(len(files_here)) + " files)")
-                            if len(folder_list) % 5 == 0:
-                                status_box.caption(
-                                    "Scanning: " + folder_name
-                                    + " | Folders: " + str(len(folder_list))
-                                    + " | Files: " + str(fi[0])
-                                )
-                            for item in files_here:
-                                iname = item.get("name", "")
-                                ipath = f"{folder_path}/{iname}"
-                                if Path(iname).suffix.lower() not in VALID_EXT: continue
-                                if "journey_accelerate_portfolio" in iname.lower(): continue
-                                _ftype = "transcript" if any(
-                                    v in folder_path.lower() for v in TRANSCRIPT_FOLDER_VARIANTS
-                                ) else (
-                                    "journey"    if any(m in folder_path.lower() for m in [
-                                                     "sign off journey", "journey documents",
-                                                     "js1", "js2"
-                                                 ]) or "journey" in iname.lower() else
-                                    "feedback"   if "feedback"   in iname.lower() else
-                                    "sprint"     if "sprint"     in iname.lower() else
-                                    "attendance" if "attendance" in iname.lower() else
-                                    "other"
-                                )
-                                file_index[ipath] = {
-                                    "type":     _ftype,
-                                    "modified": item.get("lastModifiedDateTime", ""),
-                                    "size":     item.get("size", 0),
-                                }
-                                fi[0] += 1
-                                if fi[0] % 5 == 0:
-                                    prog_pre.progress(
-                                        min(fi[0] / max(fi[0] + 20, 1), 0.95),
-                                        text="Indexed " + str(fi[0]) + " | " + iname[:50]
-                                    )
-                            for item in sub_folders:
-                                iname = item.get("name", "")
-                                if iname.lower() in venture_folder_names: continue
-                                index_folder(f"{folder_path}/{iname}", depth + 1)
-
-                        index_folder(COMMON_FOLDER)
-                        for extra in EXTRA_SCAN_FOLDERS:
-                            try:
-                                if sp_pre.list_folder(extra):
-                                    index_folder(extra)
-                            except Exception:
-                                pass
-
-                        status_box.markdown(
-                            "**Index complete** — "
-                            + str(len(folder_list)) + " folders · "
-                            + str(fi[0]) + " files indexed"
-                        )
                     except Exception as e:
-                        st.error(f"Index error: {e}")
+                        st.error(f"SharePoint connection error: {e}")
+
+                def index_folder(folder_sp, depth=0):
+                    folder_name = folder_sp.split("/")[-1]
+                    if depth > 0 and folder_name.lower() in venture_folder_names:
+                        return
+                    if USE_LOCAL_FOLDER:
+                        items = local_list_folder(local_path(folder_sp))
+                    elif sp_pre:
+                        try: items = sp_pre.list_folder(folder_sp)
+                        except: return
+                    else:
+                        return
+                    sub_folders = [i for i in items if "folder" in i]
+                    files_here  = [i for i in items if "file"   in i]
+                    folder_list.append("  " * depth + "📁 " + folder_name
+                                       + " (" + str(len(files_here)) + " files)")
+                    if len(folder_list) % 5 == 0:
+                        status_box.caption("Scanning: " + folder_name
+                            + " | Folders: " + str(len(folder_list))
+                            + " | Files: "   + str(fi[0]))
+                    for item in files_here:
+                        iname = item.get("name", "")
+                        ipath = f"{folder_sp}/{iname}"
+                        if Path(iname).suffix.lower() not in VALID_EXT: continue
+                        if "journey_accelerate_portfolio" in iname.lower(): continue
+                        _ftype = "transcript" if any(
+                            v in folder_sp.lower() for v in TRANSCRIPT_FOLDER_VARIANTS
+                        ) else (
+                            "journey" if any(m in folder_sp.lower() for m in [
+                                "sign off journey","journey documents","js1","js2"
+                            ]) or "journey" in iname.lower() else
+                            "feedback"   if "feedback"   in iname.lower() else
+                            "sprint"     if "sprint"     in iname.lower() else
+                            "attendance" if "attendance" in iname.lower() else
+                            "other"
+                        )
+                        file_index[ipath] = {
+                            "type":     _ftype,
+                            "modified": item.get("lastModifiedDateTime", ""),
+                            "size":     item.get("size", 0),
+                        }
+                        fi[0] += 1
+                        if fi[0] % 5 == 0:
+                            prog_pre.progress(
+                                min(fi[0]/max(fi[0]+20,1), 0.95),
+                                text="Indexed "+str(fi[0])+" | "+iname[:50])
+                    for item in sub_folders:
+                        iname = item.get("name","")
+                        if iname.lower() in venture_folder_names: continue
+                        index_folder(f"{folder_sp}/{iname}", depth+1)
+
+                try:
+                    if USE_LOCAL_FOLDER:
+                        status_box.caption(f"📂 Local: {LOCAL_COMMON}")
+                    index_folder(COMMON_FOLDER)
+                    for extra in EXTRA_SCAN_FOLDERS:
+                        try:
+                            exists = (os.path.isdir(local_path(extra)) if USE_LOCAL_FOLDER
+                                      else bool(sp_pre))
+                            if exists: index_folder(extra)
+                        except Exception: pass
+                    status_box.markdown(
+                        "**Index complete** — "+str(len(folder_list))+" folders · "
+                        +str(fi[0])+" files  \n"
+                        +("📂 Local OneDrive" if USE_LOCAL_FOLDER else "☁️ SharePoint")
+                    )
+                except Exception as e:
+                    st.error(f"Index error: {e}")
 
                 att = load_attendance_cached(sp_id, use_sp)
                 _store_file_index(file_index, att)
@@ -1730,6 +1837,239 @@ with step4_tab:
 # ══════════════════════════════════════════════════════
 #  STATUS TAB
 # ══════════════════════════════════════════════════════
+with step5_tab:
+    st.markdown("### 📞 Generate Call Intelligence Repository")
+    st.caption(
+        "Reads transcripts + VP reports + panel notes from venture folders and "
+        "Common Documents → Extracts 7 structured fields per call → "
+        "Saves call_intelligence_repository.json  \n"
+        "⚡ Ventures with no transcript files are automatically skipped (saves credits)"
+    )
+
+    if not client:
+        st.error("❌ Anthropic API key required."); st.stop()
+
+    CI_KEY = "ci_repo_results"
+    if CI_KEY not in st.session_state:
+        st.session_state[CI_KEY] = {}
+    ci_results = st.session_state[CI_KEY]
+
+    if not _retrieve_file_index()[0]:
+        st.warning("⚠️ Build the file index in Step 0 first.")
+        st.stop()
+
+    # ── Upload existing repo to skip unchanged ventures ──
+    st.markdown("#### Upload existing call_intelligence_repository.json (optional)")
+    st.caption("Ventures whose files haven't changed since last run will be skipped.")
+    ci_upload = st.file_uploader(
+        "Upload existing call_intelligence_repository.json",
+        type="json", key="ci_existing_upload"
+    )
+    ci_already_done = set()
+    ci_existing_data = {}
+    if ci_upload:
+        try:
+            existing_ci = json.load(ci_upload)
+            ci_existing_data = existing_ci.get("ventures", {})
+            ci_already_done  = set(ci_existing_data.keys())
+            # Merge into results
+            for vn, vd in ci_existing_data.items():
+                if vn not in ci_results:
+                    ci_results[vn] = vd
+            st.success(f"✅ {len(ci_already_done)} ventures loaded — unchanged ones will be skipped")
+        except Exception as e:
+            st.error(f"Upload error: {e}")
+
+    st.divider()
+
+    # ── Batch setup ──────────────────────────────────────
+    ventures_to_run = st.multiselect(
+        "Ventures to process (leave empty = all)",
+        options=ventures_list,
+        key="ci_v_filter"
+    )
+    batch_sz = st.selectbox("Batch size", [5, 10, 15], index=1, key="ci_batch_sz")
+    run_list = ventures_to_run if ventures_to_run else ventures_list
+    batches  = [run_list[i:i+batch_sz] for i in range(0, len(run_list), batch_sz)]
+
+    st.caption(f"{len(run_list)} ventures · {len(batches)} batches of {batch_sz}")
+
+    run_all_ci = st.button("▶ Run All Batches", key="run_all_ci")
+
+    for bi, batch in enumerate(batches):
+        done_count = sum(1 for v in batch if ci_results.get(v, {}).get("status") == "done")
+        with st.expander(
+            f"{'✅' if done_count == len(batch) else '🔲'} Batch {bi+1} — "
+            f"{done_count}/{len(batch)} done — "
+            f"{', '.join(batch[:3])}{'...' if len(batch)>3 else ''}"
+        ):
+            run_btn = st.button(f"▶ Run Batch {bi+1}", key=f"run_ci_b_{bi}")
+
+            if run_btn or run_all_ci:
+                prog_ci = st.progress(0, text=f"Starting batch {bi+1}...")
+
+                for vi, vname in enumerate(batch):
+                    # ── Skip check ────────────────────────────────────
+                    stored_sigs = ci_results.get(vname, {}).get("file_signatures") or \
+                                  ci_existing_data.get(vname, {}).get("file_signatures", {})
+                    if not _venture_files_changed(vname, stored_sigs):
+                        prog_ci.progress(
+                            (vi+1)/len(batch),
+                            text=f"⚡ {vname} — no changes, skipping"
+                        )
+                        continue
+
+                    prog_ci.progress(
+                        vi/len(batch),
+                        text=f"Processing {vname} ({vi+1}/{len(batch)})..."
+                    )
+
+                    # ── Load venture files ────────────────────────────
+                    row     = get_row(vname)
+                    hub     = cv(row, col_hub)
+                    vp      = cv(row, col_vp)
+                    sprint  = cv(row, col_sprint_type) or "General"
+                    vfiles  = load_v_files(vname)
+
+                    fb_text     = sp_get_text(vfiles["feedback"]) if "feedback" in vfiles else ""
+                    sprint_text = sp_get_text(vfiles["sprint"])   if "sprint"   in vfiles else ""
+                    jour_text   = sp_get_text(vfiles["journey"])  if "journey"  in vfiles else ""
+
+                    # All transcript-type files from venture folder
+                    tr_parts = []
+                    for k, fpath in vfiles.items():
+                        if k == "transcript" or k.startswith("transcript_"):
+                            txt = sp_get_text(fpath)
+                            if txt:
+                                tr_parts.append(
+                                    f"=== SOURCE: {fpath.split('/')[-1]} ===\n{txt}"
+                                )
+
+                    # Other venture folder docs (VP reports, panel notes, etc.)
+                    other_parts = []
+                    for k, fpath in vfiles.items():
+                        if k.startswith("other_"):
+                            txt = sp_get_text(fpath)
+                            if txt:
+                                other_parts.append(
+                                    f"=== SOURCE: {fpath.split('/')[-1]} ===\n{txt}"
+                                )
+
+                    # Common documents — transcript folder files for this venture
+                    common_tr = _read_venture_files_from_index(vname, sp_reader)
+
+                    # Combine all transcript-type sources
+                    combined_tr = "\n\n".join(
+                        t for t in tr_parts + [common_tr] + other_parts if t
+                    )
+
+                    # ── SKIP Step 5 if no transcripts found ──────────
+                    # Sonnet call costs ~$0.10 per venture — skip if no source material
+                    if not combined_tr or len(combined_tr.strip()) < 100:
+                        prog_ci.progress(
+                            (vi+1)/len(batch),
+                            text=f"⚠️ {vname} — no transcripts found, skipping"
+                        )
+                        ci_results[vname] = {
+                            "status":          "no_transcripts",
+                            "venture_name":    vname,
+                            "hub":             hub,
+                            "venture_partner": vp,
+                            "sprint":          sprint,
+                            "calls":           [],
+                            "file_references": {},
+                            "processed_at":    datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                            "skip_reason":     "No transcript or call documents found",
+                        }
+                        st.session_state[CI_KEY] = ci_results
+                        continue
+
+                    # ── Extract call intelligence ─────────────────────
+                    # Build file_paths dict for source file references in output
+                    file_paths = {}
+                    for k, fpath in vfiles.items():
+                        file_paths[k] = {
+                            "sp_path":  fpath,
+                            "filename": fpath.split("/")[-1],
+                            "folder":   "/".join(fpath.split("/")[:-1]),
+                        }
+
+                    try:
+                        from processor import extract_call_intelligence
+                        calls = extract_call_intelligence(
+                            client           = client,
+                            vname            = vname,
+                            sprint           = sprint,
+                            transcript_text  = combined_tr,
+                            feedback_text    = fb_text,
+                            sprint_plan_text = sprint_text,
+                            journey_text     = jour_text,
+                            file_paths       = file_paths,
+                        )
+
+                        # Build venture-level file_references block
+                        file_refs = {
+                            k: {
+                                "filename": v["filename"],
+                                "sp_path":  v["sp_path"],
+                                "folder":   v["folder"],
+                            }
+                            for k, v in file_paths.items()
+                            if v.get("filename") and v["filename"] != "Not Available"
+                        }
+
+                        ci_results[vname] = {
+                            "status":          "done",
+                            "venture_name":    vname,
+                            "hub":             hub,
+                            "venture_partner": vp,
+                            "sprint":          sprint,
+                            "file_references": file_refs,
+                            "calls":           calls,
+                            "file_signatures": _get_venture_file_signatures(vname),
+                            "processed_at":    datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        }
+
+                    except Exception as e:
+                        ci_results[vname] = {
+                            "status": "error", "error": str(e),
+                            "venture_name": vname, "calls": [],
+                        }
+
+                    st.session_state[CI_KEY] = ci_results
+
+                prog_ci.progress(1.0, text=f"✅ Batch {bi+1} complete!")
+                st.rerun()
+
+    # ── Download call_intelligence_repository.json ───────
+    st.divider()
+    done_ci    = {v: d for v, d in ci_results.items() if d.get("status") == "done"}
+    skipped_ci = {v: d for v, d in ci_results.items() if d.get("status") == "no_transcripts"}
+    total_calls = sum(len(d.get("calls",[])) for d in done_ci.values())
+
+    st.markdown(
+        f"**{len(done_ci)}** ventures processed · "
+        f"**{len(skipped_ci)}** skipped (no transcripts) · "
+        f"**{total_calls}** call records extracted"
+    )
+
+    if done_ci or skipped_ci:
+        ci_payload = {
+            "generated_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "venture_count": len(done_ci),
+            "total_calls":   total_calls,
+            "ventures":      {**done_ci, **skipped_ci},
+        }
+        st.download_button(
+            "⬇️ Download call_intelligence_repository.json",
+            data=json.dumps(ci_payload, indent=2, default=str),
+            file_name="call_intelligence_repository.json",
+            mime="application/json",
+        )
+        st.caption(
+            f"Upload to SharePoint at: `{REPO_FOLDER}/call_intelligence_repository.json`"
+        )
+
 with status_tab:
     st.markdown("### 📁 Repository Status & Download")
 
