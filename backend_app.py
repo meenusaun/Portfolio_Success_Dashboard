@@ -690,6 +690,11 @@ with step1_tab:
                         from sharepoint_reader import SharePointReader
                         sp_pre = SharePointReader(ENV_CLIENT_ID, ENV_TENANT_ID, ENV_CLIENT_SECRET)
 
+                        # Venture folder names — excluded from index (handled by load_v_files)
+                        venture_folder_names = set(
+                            v.strip().lower() for v in ventures_list if v.strip()
+                        )
+
                         def index_folder(folder_path, depth=0):
                             try:
                                 items = sp_pre.list_folder(folder_path)
@@ -698,6 +703,9 @@ with step1_tab:
                             sub_folders = [i for i in items if "folder" in i]
                             files_here  = [i for i in items if "file"   in i]
                             folder_name = folder_path.split("/")[-1]
+                            # Skip venture-named sub-folders — handled by load_v_files()
+                            if depth > 0 and folder_name.lower() in venture_folder_names:
+                                return
                             folder_list.append("  " * depth + "📁 " + folder_name
                                                + " (" + str(len(files_here)) + " files)")
                             if len(folder_list) % 5 == 0:
@@ -711,7 +719,7 @@ with step1_tab:
                                 ipath = f"{folder_path}/{iname}"
                                 if Path(iname).suffix.lower() not in VALID_EXT: continue
                                 if "journey_accelerate_portfolio" in iname.lower(): continue
-                                ftype = "transcript" if any(
+                                _ftype = "transcript" if any(
                                     v in folder_path.lower() for v in TRANSCRIPT_FOLDER_VARIANTS
                                 ) else (
                                     "feedback"   if "feedback"   in iname.lower() else
@@ -721,7 +729,7 @@ with step1_tab:
                                     "other"
                                 )
                                 file_index[ipath] = {
-                                    "type":     ftype,
+                                    "type":     _ftype,
                                     "modified": item.get("lastModifiedDateTime", ""),
                                     "size":     item.get("size", 0),
                                 }
@@ -733,6 +741,7 @@ with step1_tab:
                                     )
                             for item in sub_folders:
                                 iname = item.get("name", "")
+                                if iname.lower() in venture_folder_names: continue
                                 index_folder(f"{folder_path}/{iname}", depth + 1)
 
                         index_folder(COMMON_FOLDER)
@@ -1186,8 +1195,20 @@ with step2_tab:
                     vfiles = load_v_files(vname)
                     fb_text = sp_get_text(vfiles["feedback"])   if "feedback"   in vfiles else ""
                     tr_text = sp_get_text(vfiles["transcript"]) if "transcript" in vfiles else ""
-                    common_tr_text     = _read_venture_files_from_index(vname, sp_reader)
-                    combined_transcript = "\n\n".join(t for t in [tr_text, common_tr_text] if t)
+
+                    # Read other venture folder files (VP reports, panel notes, etc.)
+                    other_texts = [
+                        f"=== SOURCE: {p.split('/')[-1]} ===\n{sp_get_text(p)}"
+                        for k, p in vfiles.items()
+                        if k.startswith("other_") and sp_get_text(p)
+                    ]
+
+                    # Read common transcript files from index (transcript folder)
+                    common_tr_text = _read_venture_files_from_index(vname, sp_reader)
+
+                    combined_transcript = "\n\n".join(
+                        t for t in [tr_text, common_tr_text] + other_texts if t
+                    )
 
                     from processor import extract_session_feedback
                     sessions = extract_session_feedback(
@@ -1629,7 +1650,7 @@ with step4_tab:
                     others  = [sp_get_text(p) for k,p in vfiles.items() if k.startswith("other_")]
                     others  = [t for t in others if t]
 
-                    venture_common = extract_venture_from_common(vname, common_text_p)
+                    venture_common = _read_venture_files_from_index(vname, sp_reader)
 
                     sources = {
                         "Feedback": fb_text, "Transcript": tr_text,
