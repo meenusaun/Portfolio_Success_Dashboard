@@ -519,7 +519,8 @@ def rag_badge(rag):
     emoji = RAG_EMOJI.get(rag, "⚪")
     return f'<span class="{css}">{emoji} {rag}</span>'
 
-def render_call_detail_fields(call):
+def render_call_detail_fields(call, vname=None, journey_repo=None,
+                               signals_repo=None):
     """Render the 7 structured call intelligence fields for one call record."""
     objective = call.get("call_objective", "Not Available")
     topics    = call.get("discussion_topics", [])
@@ -528,6 +529,7 @@ def render_call_detail_fields(call):
     decisions = call.get("key_decisions", [])
     actions   = call.get("action_items", [])
     risks     = call.get("risks_challenges", [])
+    sprint_gaps_context = call.get("sprint_gaps_context", "")
 
     def _na(v): return "—" if not v or str(v) in ["Not Available","nan","None",""] else str(v)
     def _list(items, color="#334155"):
@@ -587,13 +589,178 @@ def render_call_detail_fields(call):
             f"<ul style='margin:0;padding-left:16px;font-size:0.82rem'>{_list(actions)}</ul></div>",
             unsafe_allow_html=True
         )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Gap classification section ─────────────────────────────
+    # Determine sprint status and journey data for this venture
+    is_in_sprint = False
+    journey_data = {}
+    if vname and signals_repo:
+        v = signals_repo.get("venture_summary", {}).get(vname, {})
+        sp_status = v.get("overall_sprint_status", "")
+        is_in_sprint = sp_status in ["Active", "Slow"]
+    if vname and journey_repo:
+        journey_data = journey_repo.get("ventures", {}).get(vname, {})
+
+    render_gaps_with_classification(
+        risks, sprint_gaps_context, journey_data, is_in_sprint
+    )
+
+
+def classify_gap(risk, sprint_gaps_context, journey_data, is_in_sprint):
+    """
+    Classify a gap/risk as:
+      'In sprint'  — already being addressed in current sprint
+      'In journey' — flagged in the Growth Journey Report
+      'New gap'    — not in sprint or journey (newly identified)
+      'NA'         — venture not in active sprint
+
+    sprint_gaps_context: string from call record (e.g. "Sprint gaps: A; B | Objectives: C")
+    journey_data: dict from journey_repo for this venture
+    is_in_sprint: bool — True if venture has Active/Slow sprint status
+    """
+    if not is_in_sprint:
+        return "NA"
+
+    risk_lower = risk.lower().strip()
+    risk_words = [w for w in risk_lower.split() if len(w) > 4]
+
+    def has_overlap(text_lower):
+        """Return True if 2+ significant words from risk appear in text."""
+        matching = [w for w in risk_words if w in text_lower]
+        return len(matching) >= 2 or (len(risk_words) == 1 and risk_lower[:25] in text_lower)
+
+    # Check sprint gaps context
+    if sprint_gaps_context and sprint_gaps_context not in ["Not Available", "—", ""]:
+        sg_lower = sprint_gaps_context.lower()
+        if has_overlap(sg_lower):
+            return "In sprint"
+
+    # Check journey document — multiple possible field names
+    if journey_data:
+        journey_text = " ".join([
+            " ".join(journey_data.get("challenges", [])),
+            " ".join(journey_data.get("gaps", [])),
+            " ".join(journey_data.get("risks", [])),
+            " ".join(journey_data.get("growth_areas", [])),
+            journey_data.get("summary", ""),
+            journey_data.get("growth_journey_summary", ""),
+        ]).lower()
+        if journey_text.strip() and has_overlap(journey_text):
+            return "In journey"
+
+    return "New gap"
+
+
+def render_gap_badge(status):
+    """Return HTML badge for a gap status."""
+    styles = {
+        "In sprint":  "background:#fef3c7;color:#92400e;border:1px solid #fde68a",
+        "In journey": "background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe",
+        "New gap":    "background:#fee2e2;color:#991b1b;border:1px solid #fecaca",
+        "NA":         "background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0",
+    }
+    icons = {"In sprint":"🏃","In journey":"📄","New gap":"🆕","NA":"—"}
+    style = styles.get(status, styles["NA"])
+    icon  = icons.get(status, "—")
+    return (
+        f"<span style='{style};padding:1px 8px;border-radius:20px;"
+        f"font-size:10px;font-weight:600;white-space:nowrap'>"
+        f"{icon} {status}</span>"
+    )
+
+
+def render_gaps_with_classification(risks, sprint_gaps_context,
+                                     journey_data, is_in_sprint):
+    """
+    Render the risks/challenges section with gap classification badges.
+    Shows: In sprint 🏃 / In journey 📄 / New gap 🆕 / NA —
+    """
+    if not risks:
+        st.markdown(
+            "<div style='padding:10px 13px;background:#fff5f5;border-radius:8px;"
+            "font-size:0.82rem;color:#94a3b8'>⚠️ Risks / challenges — none identified</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Counts per category
+    categorised = [(r, classify_gap(r, sprint_gaps_context, journey_data, is_in_sprint))
+                   for r in risks]
+    in_sprint_n  = sum(1 for _, s in categorised if s == "In sprint")
+    in_journey_n = sum(1 for _, s in categorised if s == "In journey")
+    new_gap_n    = sum(1 for _, s in categorised if s == "New gap")
+    na_n         = sum(1 for _, s in categorised if s == "NA")
+
+    # Summary badge row
+    summary_parts = []
+    if in_sprint_n:
+        summary_parts.append(
+            f"<span style='background:#fef3c7;color:#92400e;padding:2px 8px;"
+            f"border-radius:12px;font-size:10px;font-weight:600'>"
+            f"🏃 {in_sprint_n} in sprint</span>"
+        )
+    if in_journey_n:
+        summary_parts.append(
+            f"<span style='background:#dbeafe;color:#1e40af;padding:2px 8px;"
+            f"border-radius:12px;font-size:10px;font-weight:600'>"
+            f"📄 {in_journey_n} in journey</span>"
+        )
+    if new_gap_n:
+        summary_parts.append(
+            f"<span style='background:#fee2e2;color:#991b1b;padding:2px 8px;"
+            f"border-radius:12px;font-size:10px;font-weight:600'>"
+            f"🆕 {new_gap_n} new</span>"
+        )
+    if na_n and not (in_sprint_n or in_journey_n or new_gap_n):
+        summary_parts.append(
+            f"<span style='background:#f1f5f9;color:#64748b;padding:2px 8px;"
+            f"border-radius:12px;font-size:10px;font-weight:600'>"
+            f"— {na_n} (venture not in sprint)</span>"
+        )
+
+    # Header with summary badges
     st.markdown(
-        f"<div style='padding:10px 13px;background:#fff5f5'>"
-        f"<div style='{lbl}'>⚠️ Risks / challenges</div>"
-        f"<ul style='margin:0;padding-left:16px;font-size:0.82rem'>{_list(risks,'#991b1b')}</ul></div>",
+        f"<div style='padding:10px 13px 6px 13px;background:#fff5f5;"
+        f"border-radius:8px 8px 0 0;border:.5px solid #fecaca'>"
+        f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:.06em;"
+        f"color:#94a3b8;margin-bottom:6px'>⚠️ Risks / challenges ({len(risks)})</div>"
+        f"<div style='display:flex;gap:6px;flex-wrap:wrap'>"
+        f"{''.join(summary_parts)}</div></div>",
         unsafe_allow_html=True
     )
-    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Per-risk rows
+    for i, (risk, status) in enumerate(categorised):
+        border_b = "border-radius:0 0 8px 8px" if i == len(risks) - 1 else ""
+        bg = {
+            "In sprint":  "#fffbeb",
+            "In journey": "#eff6ff",
+            "New gap":    "#fef2f2",
+            "NA":         "#fafafa",
+        }.get(status, "#fafafa")
+        st.markdown(
+            f"<div style='padding:7px 13px;background:{bg};"
+            f"border:.5px solid #fecaca;border-top:none;{border_b};"
+            f"display:flex;align-items:flex-start;gap:8px'>"
+            f"{render_gap_badge(status)}"
+            f"<span style='font-size:0.82rem;color:#334155;flex:1'>{risk}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    # Legend
+    if is_in_sprint:
+        st.markdown(
+            "<div style='padding:4px 13px 6px;background:#fafafa;"
+            "border:.5px solid #fecaca;border-top:none;border-radius:0 0 8px 8px;"
+            "font-size:10px;color:#94a3b8'>"
+            "🏃 In sprint — already being addressed &nbsp;|&nbsp; "
+            "📄 In journey — flagged in Growth Journey Report &nbsp;|&nbsp; "
+            "🆕 New gap — newly identified in this call"
+            "</div>",
+            unsafe_allow_html=True
+        )
 
 
 def safe_copy(src):
@@ -2494,6 +2661,32 @@ with tab_ventures:
                     st.caption("Structured call data: objective, discussion topics, company updates, VP guidance, key decisions, action items, risks")
                     st.divider()
 
+                    # ── Venture-level gap summary (all calls combined) ──
+                    all_risks_raw = []
+                    for c in ci_calls:
+                        for r in c.get("risks_challenges", []):
+                            if r and r not in all_risks_raw:
+                                all_risks_raw.append(r)
+
+                    if all_risks_raw:
+                        v_sig  = signals_repo.get("venture_summary", {}).get(vname, {}) if signals_repo else {}
+                        v_sp   = v_sig.get("overall_sprint_status", "")
+                        v_in_sprint = v_sp in ["Active", "Slow"]
+                        v_journey   = journey_repo.get("ventures", {}).get(vname, {}) if journey_repo else {}
+                        # Use the sprint_gaps_context from the most recent call
+                        all_sprint_ctx = " | ".join(
+                            c.get("sprint_gaps_context","") for c in ci_calls
+                            if c.get("sprint_gaps_context","") not in ["Not Available","","—"]
+                        )
+                        with st.expander(
+                            f"⚠️ All gaps identified across {len(ci_calls)} call(s) — {len(all_risks_raw)} total",
+                            expanded=True
+                        ):
+                            render_gaps_with_classification(
+                                all_risks_raw, all_sprint_ctx, v_journey, v_in_sprint
+                            )
+                        st.markdown("<br>", unsafe_allow_html=True)
+
                     CALL_TYPE_COLORS = {
                         "Sprint call":         "#5b21b6",
                         "Panel call":          "#854f0b",
@@ -2535,7 +2728,12 @@ with tab_ventures:
                         )
 
                         # 7-field detail panel
-                        render_call_detail_fields(call)
+                        render_call_detail_fields(
+                            call,
+                            vname=vname,
+                            journey_repo=journey_repo,
+                            signals_repo=signals_repo
+                        )
 
                         # Venture feedback
                         if fb_text and fb_text not in ["Not Available", "—"]:
@@ -3513,7 +3711,12 @@ with tab_call_intel:
                     )
 
                     # 7-field detail
-                    render_call_detail_fields(call)
+                    render_call_detail_fields(
+                        call,
+                        vname=vn,
+                        journey_repo=journey_repo,
+                        signals_repo=signals_repo
+                    )
 
                     # Venture feedback if available
                     if fb_text and fb_text not in ["Not Available","—"]:
