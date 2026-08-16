@@ -431,33 +431,99 @@ def _retrieve_file_index():
     )
 
 def _read_venture_files_from_index(vname, sp):
-    """Download only Common Documents files relevant to this venture on demand."""
+    """
+    Download only Common Documents files relevant to this venture.
+
+    Strategy (fast-to-slow):
+    1. Always include files where venture name appears in the FILE PATH
+       (covers venture-specific sub-folders, named files)
+    2. For transcript-folder files where name isn't in path:
+       check FILENAME only — download only if filename contains a venture
+       word match. Skip the rest — transcript files not named after a venture
+       will be caught when the venture folder's own transcript files are read.
+
+    This avoids downloading 80 transcript files per venture.
+    """
     index, _ = _retrieve_file_index()
     if not index or not sp:
         return ""
     vname_lower = vname.lower()
-    skip = {"and","the","pvt","ltd","llp","inc","for","with","from","that"}
+    skip   = {"and","the","pvt","ltd","llp","inc","for","with","from","that"}
     vwords = [w for w in vname_lower.split() if len(w) > 3 and w not in skip]
+
     parts = []
-    for fpath, ftype in index.items():
+    for fpath, fmeta in index.items():
+        # fmeta is now a dict {type, modified, size} — handle both old and new format
+        ftype       = fmeta["type"] if isinstance(fmeta, dict) else fmeta
         fpath_lower = fpath.lower()
         fname       = fpath.split("/")[-1]
+        fname_lower = fname.lower()
+
         is_transcript_folder = any(v in fpath_lower for v in TRANSCRIPT_FOLDER_VARIANTS)
-        name_in_path = vname_lower in fpath_lower or any(w in fpath_lower for w in vwords)
-        if not is_transcript_folder and not name_in_path:
-            continue
+
+        # Check if venture name or key words appear in the path or filename
+        name_in_path  = (vname_lower in fpath_lower or
+                         any(w in fpath_lower for w in vwords))
+        name_in_fname = (vname_lower in fname_lower or
+                         any(w in fname_lower for w in vwords))
+
+        if is_transcript_folder:
+            # For transcript folders: only download if venture name is in
+            # the filename — avoids downloading every transcript for every venture
+            if not name_in_fname:
+                continue
+        else:
+            # For other common doc files: require name in path
+            if not name_in_path:
+                continue
+
         try:
-            cb = sp.download_file(fpath)
+            cb   = sp.download_file(fpath)
             text = extract_text_bytes(cb, fname)
             if text and len(text) >= 50:
-                if is_transcript_folder and not name_in_path:
-                    tl = text[:3000].lower()
-                    if not (vname_lower in tl or any(w in tl for w in vwords if len(w)>5)):
-                        continue
                 parts.append(f"=== SOURCE: {fpath} ===\n{text}")
         except Exception:
             pass
+
     return "\n\n".join(parts)
+
+def _get_venture_file_signatures(vname):
+    """
+    Return {sp_path: lastModifiedDateTime} for all files belonging to
+    this venture in the file index. Used to detect changes since last run.
+    """
+    index, _ = _retrieve_file_index()
+    vname_lower = vname.lower()
+    skip   = {"and","the","pvt","ltd","llp","inc","for","with","from","that"}
+    vwords = [w for w in vname_lower.split() if len(w) > 3 and w not in skip]
+    sigs   = {}
+    for fpath, fmeta in index.items():
+        fpath_lower = fpath.lower()
+        fname_lower = fpath.split("/")[-1].lower()
+        modified    = fmeta["modified"] if isinstance(fmeta, dict) else ""
+        in_tr_folder = any(v in fpath_lower for v in TRANSCRIPT_FOLDER_VARIANTS)
+        if in_tr_folder:
+            # Only include transcript files named after this venture
+            if vname_lower in fname_lower or any(w in fname_lower for w in vwords):
+                sigs[fpath] = modified
+        else:
+            if vname_lower in fpath_lower or any(w in fpath_lower for w in vwords):
+                sigs[fpath] = modified
+    return sigs
+
+def _venture_files_changed(vname, stored_sigs):
+    """
+    Return True if any source file for this venture has changed since
+    stored_sigs was captured, or if new files were added.
+    stored_sigs: {sp_path: lastModifiedDateTime} saved in the repository JSON.
+    Returns True (must reprocess) if stored_sigs is empty or None.
+    """
+    if not stored_sigs:
+        return True
+    current = _get_venture_file_signatures(vname)
+    if set(current.keys()) != set(stored_sigs.keys()):
+        return True  # files added or removed
+    return any(stored_sigs.get(p) != m for p, m in current.items())
 
 # ── attendance ─────────────────────────────────────────
 @st.cache_data(show_spinner=False, ttl=600)
@@ -596,7 +662,7 @@ with step1_tab:
         expanded=not preload_done
     ):
         if preload_done:
-            n_tr = sum(1 for v in _idx.values() if v == "transcript")
+            n_tr = sum(1 for v in _idx.values() if (v["type"] if isinstance(v,dict) else v) == "transcript")
             st.success(
                 f"{len(_idx)} files indexed · {n_tr} transcript files "
                 f"· {len(_att)} attendance records  "
@@ -654,7 +720,11 @@ with step1_tab:
                                     "attendance" if "attendance" in iname.lower() else
                                     "other"
                                 )
-                                file_index[ipath] = ftype
+                                file_index[ipath] = {
+                                    "type":     ftype,
+                                    "modified": item.get("lastModifiedDateTime", ""),
+                                    "size":     item.get("size", 0),
+                                }
                                 fi[0] += 1
                                 if fi[0] % 5 == 0:
                                     prog_pre.progress(
@@ -723,6 +793,8 @@ with step1_tab:
             }
             st.session_state["existing_sig_repo"]       = existing
             st.session_state["already_done_ventures"]   = already_done
+            # Store full venture data for file-signature comparison
+            st.session_state["sig_existing_data"]       = existing.get("venture_summary", {})
         except Exception as e:
             st.error(f"Could not read file: {e}")
 
@@ -795,11 +867,27 @@ with step1_tab:
 
                 prog = st.progress(0, text=f"Starting batch {bi+1}...")
                 for vi, vname in enumerate(batch):
-                    # Skip if already done in this session OR in uploaded existing repo
-                    if sig_results.get(vname,{}).get("status") == "done" or                        vname in st.session_state.get("already_done_ventures", set()):
-                        prog.progress((vi+1)/len(batch), text=f"⚡ Skipping {vname} (already processed)")
-                        continue
                     prog.progress(vi/len(batch), text=f"Processing {vname} ({vi+1}/{len(batch)})...")
+
+                    # ── Skip check ───────────────────────────────────────
+                    # 1. Already done in this session
+                    if sig_results.get(vname,{}).get("status") == "done":
+                        # Also check if source files have changed since last run
+                        stored_sigs = sig_results[vname].get("file_signatures", {})
+                        if not _venture_files_changed(vname, stored_sigs):
+                            prog.progress((vi+1)/len(batch),
+                                          text=f"⚡ {vname} — no file changes, skipping")
+                            continue
+                    # 2. In uploaded existing repo — check file changes
+                    if vname in st.session_state.get("already_done_ventures", set()):
+                        existing = st.session_state.get(
+                            "sig_existing_data", {}
+                        ).get(vname, {})
+                        stored_sigs = existing.get("file_signatures", {})
+                        if not _venture_files_changed(vname, stored_sigs):
+                            prog.progress((vi+1)/len(batch),
+                                          text=f"⚡ {vname} — no file changes, skipping")
+                            continue
 
                     row    = get_row(vname)
                     notes  = cv(row, col_notes, default="")
@@ -854,19 +942,20 @@ with step1_tab:
                                                   att_summary, signals, pct)
 
                     sig_results[vname] = {
-                        "status":        "done",
-                        "venture_name":  vname,
-                        "hub":           hub,
+                        "status":          "done",
+                        "venture_name":    vname,
+                        "hub":             hub,
                         "venture_partner": vp,
-                        "sprint":        sprint,
-                        "rag":           rag,
-                        "signals":       signals,
-                        "total_chars":   total_chars,
-                        "num_chunks":    num_chunks,
-                        "sources_used":  srcs_used,
-                        "att_sessions":  att_sessions,
-                        "att_dates":     att_dates,
-                        "processed_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        "sprint":          sprint,
+                        "rag":             rag,
+                        "signals":         signals,
+                        "total_chars":     total_chars,
+                        "num_chunks":      num_chunks,
+                        "sources_used":    srcs_used,
+                        "att_sessions":    att_sessions,
+                        "att_dates":       att_dates,
+                        "processed_at":    datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+                        "file_signatures": _get_venture_file_signatures(vname),
                     }
                     st.session_state[SIG_RESULTS_KEY] = sig_results
 
@@ -1062,7 +1151,7 @@ with step2_tab:
 
     # Transcripts read on-demand per venture using file index
     all_transcripts = []
-    _n_tr = sum(1 for v in _retrieve_file_index()[0].values() if v == "transcript")
+    _n_tr = sum(1 for v in _retrieve_file_index()[0].values() if (v["type"] if isinstance(v,dict) else v) == "transcript")
     st.info(f"📁 {_n_tr} transcript files in index — read per venture during batch")
 
     for bi, batch in enumerate(fb_batches):

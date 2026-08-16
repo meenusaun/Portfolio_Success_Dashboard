@@ -345,7 +345,7 @@ If you cannot identify distinct sessions, return one object for the overall cont
     for i, chunk in enumerate(chunks):
         try:
             resp = client.messages.create(
-                model="claude-sonnet-4-5", max_tokens=3000,
+                model="claude-haiku-4-5-20251001", max_tokens=3000,
                 messages=[{"role":"user","content":
                     PROMPT.format(vname=vname, n=i+1, total=len(chunks), text=chunk)}])
             raw = re.sub(r"```json|```","",resp.content[0].text.strip()).strip()
@@ -846,7 +846,7 @@ For problems_solved, identify 5-8 distinct problem categories actually resolved 
 
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5-20251001",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}]
         )
