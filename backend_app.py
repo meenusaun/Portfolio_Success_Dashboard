@@ -778,34 +778,37 @@ with step1_tab:
                 "Takes 10-30 seconds. File content is downloaded per venture during batch runs."
             )
             if st.button("📂 Build File Index", key="preload_btn"):
-                # ── Immediate diagnostic ──────────────────────────────
                 from pathlib import Path as PPath
-                local_common_path = local_path(COMMON_FOLDER)
-                p_root   = PPath(LOCAL_ROOT)
-                p_common = PPath(local_common_path)
-                st.markdown("**🔍 Path diagnostic:**")
-                st.code(
-                    f"LOCAL_ROOT:           {LOCAL_ROOT}\n"
-                    f"Resolved COMMON path: {local_common_path}\n"
-                    f"LOCAL_ROOT exists:    {p_root.exists()}\n"
-                    f"COMMON exists:        {p_common.exists()}"
-                )
-                if not p_common.exists():
-                    if p_root.exists():
-                        try:
-                            contents = [f.name for f in p_root.iterdir()]
-                            st.warning(
-                                f"LOCAL_ROOT exists but Common Documents not found.\n\n"
-                                f"Contents of LOCAL_ROOT:\n"
-                                + "\n".join(f"  - {c}" for c in sorted(contents)[:20])
+                # Walk up the path to find exactly where it breaks
+                test_parts = [
+                    r"C:/Users/MeenakshiSingh",
+                    r"C:/Users/MeenakshiSingh/OneDrive - National Entrepreneurship Network",
+                    r"C:/Users/MeenakshiSingh/OneDrive - National Entrepreneurship Network/04. Advisors",
+                    r"C:/Users/MeenakshiSingh/OneDrive - National Entrepreneurship Network/04. Advisors/2026",
+                    LOCAL_ROOT,
+                    LOCAL_COMMON,
+                ]
+                st.markdown("**🔍 Path check — finding where path breaks:**")
+                broken_at = None
+                for p in test_parts:
+                    exists = PPath(p).exists()
+                    st.write(f"{'✅' if exists else '❌'} `{p}`")
+                    if not exists and broken_at is None:
+                        broken_at = p
+                        # Show what's in the parent
+                        parent = PPath(p).parent
+                        if parent.exists():
+                            children = sorted([x.name for x in parent.iterdir()])
+                            st.info(
+                                f"Parent `{parent}` exists. Contents:\n\n"
+                                + "\n".join(f"  - `{c}`" for c in children[:30])
                             )
-                        except Exception as ex:
-                            st.error(f"Cannot list LOCAL_ROOT: {ex}")
-                    else:
-                        st.error(
-                            f"❌ LOCAL_ROOT does not exist: `{LOCAL_ROOT}`\n\n"
-                            f"Update LOCAL_ROOT in backend_app.py with the exact path."
-                        )
+                        break
+                if broken_at:
+                    st.error(
+                        "Update LOCAL_ROOT and LOCAL_COMMON in backend_app.py "
+                        "with the exact folder name shown above."
+                    )
                     st.stop()
                 status_box = st.empty()
                 prog_pre   = st.progress(0, text="Scanning folders...")
