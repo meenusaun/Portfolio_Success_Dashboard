@@ -779,37 +779,86 @@ with step1_tab:
             )
             if st.button("📂 Build File Index", key="preload_btn"):
                 from pathlib import Path as PPath
-                # Walk up the path to find exactly where it breaks
-                test_parts = [
-                    r"C:/Users/MeenakshiSingh",
-                    r"C:/Users/MeenakshiSingh/OneDrive - National Entrepreneurship Network",
-                    r"C:/Users/MeenakshiSingh/OneDrive - National Entrepreneurship Network/04. Advisors",
-                    r"C:/Users/MeenakshiSingh/OneDrive - National Entrepreneurship Network/04. Advisors/2026",
-                    LOCAL_ROOT,
-                    LOCAL_COMMON,
+                import os
+
+                # Find actual username and OneDrive folder automatically
+                st.markdown("**🔍 Auto-detecting correct path:**")
+
+                # Step 1: find actual username
+                users_dir = PPath("C:/Users")
+                if not users_dir.exists():
+                    st.error("C:/Users not found — is this a Windows machine?")
+                    st.stop()
+
+                actual_users = [
+                    x.name for x in users_dir.iterdir()
+                    if x.is_dir() and x.name not in
+                    ["Public", "Default", "Default User", "All Users", "desktop.ini"]
                 ]
-                st.markdown("**🔍 Path check — finding where path breaks:**")
-                broken_at = None
-                for p in test_parts:
-                    exists = PPath(p).exists()
-                    st.write(f"{'✅' if exists else '❌'} `{p}`")
-                    if not exists and broken_at is None:
-                        broken_at = p
-                        # Show what's in the parent
-                        parent = PPath(p).parent
-                        if parent.exists():
-                            children = sorted([x.name for x in parent.iterdir()])
-                            st.info(
-                                f"Parent `{parent}` exists. Contents:\n\n"
-                                + "\n".join(f"  - `{c}`" for c in children[:30])
-                            )
+                st.write(f"Users found in C:/Users: {actual_users}")
+
+                # Step 2: find OneDrive folder for each user
+                onedrive_root = None
+                for user in actual_users:
+                    user_path = users_dir / user
+                    # Check common OneDrive folder name patterns
+                    for child in user_path.iterdir() if user_path.exists() else []:
+                        if "onedrive" in child.name.lower():
+                            st.write(f"Found OneDrive folder: `{child}`")
+                            # Check if our target subfolder exists
+                            target = child / "04. Advisors" / "2026" / "Portfolio Success Dashboard"
+                            if target.exists():
+                                onedrive_root = str(target).replace("\\", "/")
+                                st.success(f"✅ Found target folder: `{onedrive_root}`")
+                                break
+                    if onedrive_root:
                         break
-                if broken_at:
-                    st.error(
-                        "Update LOCAL_ROOT and LOCAL_COMMON in backend_app.py "
-                        "with the exact folder name shown above."
+
+                if not onedrive_root:
+                    # Show all OneDrive-like folders found
+                    st.error("Could not auto-detect path. Showing all OneDrive folders found:")
+                    for user in actual_users:
+                        user_path = users_dir / user
+                        if user_path.exists():
+                            for child in user_path.iterdir():
+                                if "onedrive" in child.name.lower():
+                                    st.code(str(child))
+                    st.info(
+                        "Copy the correct path above and update LOCAL_ROOT in backend_app.py:\n\n"
+                        "LOCAL_ROOT = r'<paste path here>/04. Advisors/2026/Portfolio Success Dashboard'"
                     )
                     st.stop()
+
+                # Step 3: use the detected path
+                detected_common = onedrive_root + "/Common Documents"
+                if not PPath(detected_common).exists():
+                    contents = [x.name for x in PPath(onedrive_root).iterdir()]
+                    st.error(
+                        f"Found root `{onedrive_root}` but no `Common Documents` inside.\n\n"
+                        f"Contents: {contents}"
+                    )
+                    st.stop()
+
+                st.success(f"✅ All paths confirmed. Using: `{detected_common}`")
+                st.info(
+                    f"Update backend_app.py with these exact values:\n\n"
+                    f"LOCAL_ROOT   = r'{onedrive_root}'\n"
+                    f"LOCAL_COMMON = r'{detected_common}'"
+                )
+
+                # Use detected path for this session
+                _local_root_override   = onedrive_root
+                _local_common_override = detected_common
+
+                def local_path_override(sp_path: str) -> str:
+                    rel    = sp_path.replace("\\", "/").strip("/")
+                    prefix = SP_FOLDER.replace("\\", "/").strip("/")
+                    if rel.startswith(prefix + "/"):
+                        rel = rel[len(prefix) + 1:]
+                    elif rel == prefix:
+                        return _local_root_override
+                    parts = [p for p in rel.split("/") if p]
+                    return _local_root_override + "/" + "/".join(parts) if parts else _local_root_override
                 status_box = st.empty()
                 prog_pre   = st.progress(0, text="Scanning folders...")
                 file_index  = {}
@@ -835,7 +884,9 @@ with step1_tab:
                     if depth > 0 and folder_name.lower() in venture_folder_names:
                         return
                     if USE_LOCAL_FOLDER:
-                        items = local_list_folder(local_path(folder_sp))
+                        # Use override path if auto-detected, else fall back to module-level
+                        _lp = local_path_override if '_local_root_override' in dir() else local_path
+                        items = local_list_folder(_lp(folder_sp))
                     elif sp_pre:
                         try: items = sp_pre.list_folder(folder_sp)
                         except: return
