@@ -39,27 +39,31 @@ REPO_FOLDER      = f"{COMMON_FOLDER}/Knowledge Repository"
 # Structure mirrors SharePoint exactly — same folder names and hierarchy.
 # Set USE_LOCAL_FOLDER = True to read locally; False to download from SP.
 
-LOCAL_BASE = (
-    r"C:\Users\MeenakshiSingh\OneDrive - National Entrepreneurship Network"
-)
-LOCAL_ROOT      = os.path.join(LOCAL_BASE, "04. Advisors", "2026",
-                               "Portfolio Success Dashboard")
+LOCAL_BASE = r"C:\Users\MeenakshiSingh\OneDrive - National Entrepreneurship Network"
+LOCAL_ROOT = os.path.join(LOCAL_BASE, "04. Advisors", "2026", "Portfolio Success Dashboard")
 LOCAL_COMMON    = os.path.join(LOCAL_ROOT, "Common Documents")
 USE_LOCAL_FOLDER = True   # ← set False to use SharePoint downloads instead
 
 def local_path(sp_path: str) -> str:
     """
-    Convert a SharePoint relative path to an absolute local OneDrive path.
-    SP path:    '04. Advisors/2026/Portfolio Success Dashboard/Agro/file.docx'
-    Local path: 'C:/Users/.../04. Advisors/2026/.../Agro/file.docx'
+    Convert a SharePoint relative path to an absolute local Windows path.
+    Handles mixed slash styles and strips the SP_FOLDER prefix.
     """
-    # SP paths use forward slashes; local uses OS separator
-    rel = sp_path.replace("\\", "/")
-    # Strip the SP_FOLDER prefix if present
-    prefix = SP_FOLDER.replace("\\", "/")
-    if rel.startswith(prefix):
-        rel = rel[len(prefix):].lstrip("/")
-    parts = rel.split("/")
+    # Normalise to forward slashes for splitting
+    rel    = sp_path.replace("\\", "/").strip("/")
+    prefix = SP_FOLDER.replace("\\", "/").strip("/")
+
+    # Strip SP_FOLDER prefix if present
+    if rel.startswith(prefix + "/"):
+        rel = rel[len(prefix) + 1:]
+    elif rel == prefix:
+        rel = ""
+
+    if not rel:
+        return LOCAL_ROOT
+
+    # Split into parts and join using OS separator
+    parts = [p for p in rel.split("/") if p]
     return os.path.join(LOCAL_ROOT, *parts)
 
 def read_local_file(sp_path: str) -> bytes:
@@ -782,24 +786,34 @@ with step1_tab:
                 "Takes 10-30 seconds. File content is downloaded per venture during batch runs."
             )
             if st.button("📂 Build File Index", key="preload_btn"):
-                # ── Immediate diagnostic — show paths before any scanning ──
+                # ── Immediate diagnostic ──────────────────────────────
                 local_common_path = local_path(COMMON_FOLDER)
+                norm_path = os.path.normpath(local_common_path)
                 st.markdown("**🔍 Path diagnostic:**")
                 st.code(
-                    f"SP_FOLDER:    {SP_FOLDER}\n"
-                    f"COMMON_FOLDER (SP):   {COMMON_FOLDER}\n"
-                    f"LOCAL_ROOT:   {LOCAL_ROOT}\n"
-                    f"LOCAL_COMMON (resolved): {local_common_path}\n"
-                    f"LOCAL folder exists: {os.path.isdir(local_common_path)}"
+                    f"LOCAL_ROOT:              {LOCAL_ROOT}\n"
+                    f"COMMON_FOLDER (SP):      {COMMON_FOLDER}\n"
+                    f"Resolved local path:     {local_common_path}\n"
+                    f"Normalised (os.path):    {norm_path}\n"
+                    f"Folder exists:           {os.path.isdir(norm_path)}"
                 )
-                if not os.path.isdir(local_common_path):
-                    st.error(
-                        f"❌ Local folder not found: `{local_common_path}`\n\n"
-                        f"Check that:\n"
-                        f"1. OneDrive is synced on this machine\n"
-                        f"2. The path in LOCAL_BASE is exactly correct\n"
-                        f"3. The folder exists at that path"
-                    )
+                if not os.path.isdir(norm_path):
+                    # Show what IS in LOCAL_ROOT to help diagnose
+                    if os.path.isdir(LOCAL_ROOT):
+                        try:
+                            contents = os.listdir(LOCAL_ROOT)
+                            st.warning(
+                                f"LOCAL_ROOT exists but `Common Documents` not found.\n\n"
+                                f"Contents of LOCAL_ROOT:\n"
+                                + "\n".join(f"  - {c}" for c in sorted(contents)[:20])
+                            )
+                        except Exception as ex:
+                            st.error(f"Cannot list LOCAL_ROOT: {ex}")
+                    else:
+                        st.error(
+                            f"❌ LOCAL_ROOT does not exist: `{LOCAL_ROOT}`\n\n"
+                            f"Check that OneDrive is synced and LOCAL_BASE path is correct."
+                        )
                     st.stop()
                 status_box = st.empty()
                 prog_pre   = st.progress(0, text="Scanning folders...")
